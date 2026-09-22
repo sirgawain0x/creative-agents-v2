@@ -10,7 +10,8 @@ export async function GET() {
   return NextResponse.json({
     agent: policy.agent,
     version: policy.version,
-    subgraphUrl: policy.subgraphUrl,
+    subgraph: policy.subgraph,
+    deniedMeTokens: policy.deniedMeTokens,
     limits: policy.limits,
     gates: policy.gates,
     trading: policy.trading,

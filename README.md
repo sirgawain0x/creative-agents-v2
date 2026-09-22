@@ -1,11 +1,11 @@
 # creative-agents-v2
 
-Deployable Next.js App Router scaffold for Creative Agents (`creative-agents` package). Slice A provides Agent 1 policy gates, health endpoints, structured logging, and cron auth helpers — **no live trading**.
+Deployable Next.js App Router scaffold for Creative Agents (`creative-agents` package). Slice B adds read-only MeToken universe discovery (Studio subgraph), wallet balance reads, and `/api/agent1/quote` — **no live trading or signing**.
 
 ## Survival First
 
 - **Trading is disabled by default** (`TRADING_ENABLED=false`).
-- Slice A exposes policy and health only; trade execution is a **no-op** even when gates are open.
+- Slice B is read-only: quotes and balances never sign or execute swaps.
 - Use `KILL_SWITCH=true` to hard-block any future trading paths.
 - Do not add wallet keys, exchange credentials, or signing secrets to this repo.
 
@@ -21,16 +21,48 @@ Copy `.env.example` to `.env.local` for local development:
 | `DAILY_VOLUME_USDC` | `100` | Max daily volume (USDC) |
 | `SLIPPAGE_BPS` | `250` | Slippage tolerance (basis points) |
 | `COOLDOWN_SECONDS` | `1800` | Cooldown between trades (seconds) |
-| `SUBGRAPH_URL` | Studio creative-platform URL | The Graph subgraph endpoint |
+| `AGENT1_DENIED_METOKENS` | _(empty)_ | Optional comma-separated deny list (reject even if subgraph-listed) |
+| `SUBGRAPH_PROVIDER_MODE` | `studio` | `studio` (preferred), `goldsky`, or `dual` |
+| `GRAPH_STUDIO_CREATIVE_PLATFORM_URL` | Studio creative-platform URL | Locked Studio subgraph endpoint |
+| `AGENT1_WALLET_ADDRESS` | _(unset)_ | Agent wallet for read-only USDC + MeToken balance reads |
+| `BASE_RPC_URL` | _(unset)_ | Base RPC for balance/quote reads (optional for mock quotes) |
+| `AGENT1_QUOTE_MODE` | `mock` | `mock` (staging) or `onchain` (diamond `calculateMeTokensMinted`) |
+| `AGENT1_METOKENS_DIAMOND_ADDRESS` | _(unset)_ | **G2 must confirm** before treating as production truth |
 | `CRON_SECRET` | _(unset)_ | Bearer token for future `/api/agent1/tick` cron auth |
 
-## API Routes (Slice A)
+## API Routes
 
 | Route | Description |
 | --- | --- |
-| `GET /api/agent1/health` | Agent 1 health + trading mode |
+| `GET /api/agent1/health` | Health, subgraph sample, optional wallet balances |
 | `GET /api/agent1/policy` | Env-driven policy limits and gates |
+| `GET/POST /api/agent1/quote` | Read-only USDC → subgraph-listed MeToken quote |
 | `GET /api/agent2/health` | Agent 2 stub (future slice) |
+
+### Slice B — `/api/agent1/quote`
+
+Read-only quote for USDC → MeToken on Base. Rejects:
+
+- Unknown MeToken (not in subgraph `Subscribe` events)
+- `AGENT1_DENIED_METOKENS` hits
+- `usdcAmount` above `MAX_TRADE_USDC`
+
+**Query (GET):** `?meToken=0x…&usdcAmount=10`
+
+**Body (POST):** `{ "meToken": "0x…", "usdcAmount": "10" }`
+
+#### Quote path & G2 blockers
+
+CreativeTV router/diamond addresses are **not G2-confirmed** for production execute.
+
+| Mode | Behavior |
+| --- | --- |
+| `AGENT1_QUOTE_MODE=mock` (default) | Staging ratio quote; safe when `BASE_RPC_URL` unset |
+| `AGENT1_QUOTE_MODE=onchain` | Read-only `calculateMeTokensMinted` on `AGENT1_METOKENS_DIAMOND_ADDRESS` via `BASE_RPC_URL` |
+
+Both modes set `venue.routerConfirmed: false`. G2 must confirm diamond/router ABI parity with `tv.creativeplatform.xyz/market` before Slice E live execute.
+
+**MeToken discovery:** `Subscribe` subgraph entities (aligned with `creativeplatform/crtv3` `/api/metokens-subgraph`). `Register` entities are hub registrations (hubs 1–4), not the token universe.
 
 ## Local Development
 
@@ -48,7 +80,10 @@ pnpm build
 pnpm start
 pnpm lint
 pnpm typecheck
+pnpm test
 ```
+
+Smoke test hits live Studio subgraph (read-only).
 
 ## Deploy (Vercel)
 
@@ -61,12 +96,12 @@ pnpm typecheck
 
 | Slice | Scope | Blockers |
 | --- | --- | --- |
-| **A** (current) | Scaffold, policy gates, health APIs, logger, cron helper | — |
-| **B** | Subgraph reads / creative platform indexing | Subgraph schema finalization, query module |
-| **C** | Agent 1 tick loop (`/api/agent1/tick`) | CRON wiring, idempotency, volume tracking |
-| **D** | Trade preparation (still no live execution) | Wallet/signer architecture, risk review |
-| **E** | Paper / simulated trading | Testnet credentials, simulation harness |
-| **F** | Live trading (if approved) | G2 license selection, security audit, `TRADING_ENABLED` governance |
+| **A** | Scaffold, policy gates, health APIs, logger, cron helper | — |
+| **B** (current) | Subgraph MeToken universe, wallet reads, read-only quote API | G2 router/diamond confirm for production onchain quotes |
+| **C** | Alchemy Agent Wallet signer + dry-run | Session credentials |
+| **D** | Ollama tick → policy → quote | Model keys |
+| **E** | Live execute + Gemini + cron | Funding, router confirm |
+| **F** | Alerts + runbook | Alert channel |
 
 ## License
 
