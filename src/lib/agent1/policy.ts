@@ -20,7 +20,7 @@ export interface Agent1PolicyGates {
 
 export interface Agent1Policy {
   agent: "agent1";
-  version: "slice-b";
+  version: "slice-c";
   subgraph: {
     providerMode: "studio" | "goldsky" | "dual";
     studioUrl: string;
@@ -29,7 +29,8 @@ export interface Agent1Policy {
   limits: Agent1PolicyLimits;
   gates: Agent1PolicyGates;
   trading: {
-    mode: "disabled" | "noop";
+    /** disabled = gates closed; dry_run = gates open but Slice C never broadcasts */
+    mode: "disabled" | "dry_run";
     reason: string;
   };
 }
@@ -95,12 +96,12 @@ export function getAgent1Policy(): Agent1Policy {
   if (killSwitch) {
     reason = "kill_switch_active";
   } else if (tradingEnabled) {
-    reason = "trading_enabled_but_slice_a_noop";
+    reason = "trading_enabled_but_slice_c_dry_run_only";
   }
 
   return {
     agent: "agent1",
-    version: "slice-b",
+    version: "slice-c",
     subgraph: {
       providerMode: getSubgraphProviderMode(),
       studioUrl,
@@ -112,7 +113,7 @@ export function getAgent1Policy(): Agent1Policy {
       killSwitch,
     },
     trading: {
-      mode: tradingBlocked ? "disabled" : "noop",
+      mode: tradingBlocked ? "disabled" : "dry_run",
       reason,
     },
   };
@@ -132,7 +133,7 @@ export function executeTradingNoOp(intent?: string): TradingNoOpResult {
     ? policy.gates.killSwitch
       ? "kill_switch_active"
       : "trading_disabled"
-    : "slice_a_noop_only";
+    : "slice_c_dry_run_only";
 
   logger.info("trading_noop", {
     intent,

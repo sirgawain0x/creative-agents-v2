@@ -120,7 +120,7 @@ async function handleQuote(input: { meToken?: string; usdcAmount?: string }) {
 
     return NextResponse.json({
       agent: "agent1",
-      slice: "B",
+      slice: "C",
       readOnly: true,
       tradingEnabled: policy.gates.tradingEnabled,
       meToken: {
