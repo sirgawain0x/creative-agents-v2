@@ -70,4 +70,4 @@ pnpm typecheck
 
 ## License
 
-Pending — G2 has not selected license terms yet. No LICENSE file is included.
+Proprietary — All Rights Reserved. Copyright (c) 2026 Creative Platform, Inc. See [LICENSE](./LICENSE).
