@@ -1,7 +1,10 @@
+import { parseDeniedMeTokens } from "@/lib/agent1/deny-list";
 import { logger } from "@/lib/logger";
-
-export const DEFAULT_SUBGRAPH_URL =
-  "https://api.studio.thegraph.com/query/3405/creative-platform/version/latest";
+import {
+  DEFAULT_STUDIO_SUBGRAPH_URL,
+  getSubgraphProviderMode,
+  getStudioSubgraphUrl,
+} from "@/lib/subgraph/creative-platform-proxy";
 
 export interface Agent1PolicyLimits {
   maxTradeUsdc: number;
@@ -17,8 +20,12 @@ export interface Agent1PolicyGates {
 
 export interface Agent1Policy {
   agent: "agent1";
-  version: "slice-a";
-  subgraphUrl: string;
+  version: "slice-b";
+  subgraph: {
+    providerMode: "studio" | "goldsky" | "dual";
+    studioUrl: string;
+  };
+  deniedMeTokens: string[];
   limits: Agent1PolicyLimits;
   gates: Agent1PolicyGates;
   trading: {
@@ -81,7 +88,8 @@ export function getAgent1Policy(): Agent1Policy {
     ),
   };
 
-  const subgraphUrl = process.env.SUBGRAPH_URL?.trim() || DEFAULT_SUBGRAPH_URL;
+  const studioUrl = getStudioSubgraphUrl() ?? DEFAULT_STUDIO_SUBGRAPH_URL;
+  const deniedMeTokens = Array.from(parseDeniedMeTokens(process.env.AGENT1_DENIED_METOKENS));
 
   let reason = "trading_disabled_by_default";
   if (killSwitch) {
@@ -92,8 +100,12 @@ export function getAgent1Policy(): Agent1Policy {
 
   return {
     agent: "agent1",
-    version: "slice-a",
-    subgraphUrl,
+    version: "slice-b",
+    subgraph: {
+      providerMode: getSubgraphProviderMode(),
+      studioUrl,
+    },
+    deniedMeTokens,
     limits,
     gates: {
       tradingEnabled,
