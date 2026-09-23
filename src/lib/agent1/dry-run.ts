@@ -59,7 +59,8 @@ export interface PlannedCall {
 export interface Agent1DryRunSuccess {
   ok: true;
   agent: "agent1";
-  slice: "E-prep";
+  slice: "E-live";
+  /** Dry-run never executes; tick owns live broadcast. */
   wouldExecute: false;
   broadcast: false;
   meToken: {
@@ -87,7 +88,7 @@ export interface Agent1DryRunSuccess {
 export interface Agent1DryRunFailure {
   ok: false;
   agent: "agent1";
-  slice: "E-prep";
+  slice: "E-live";
   wouldExecute: false;
   broadcast: false;
   error: string;
@@ -179,13 +180,13 @@ export async function dryRunUsdcToMeToken(input: {
   const policy = getAgent1Policy();
   const signer = getAgent1SignerStatus();
   const venueStatus = getAgent1VenueStatus();
-  const tradingNoOp = executeTradingNoOp("slice_e_prep_dry_run");
+  const tradingNoOp = executeTradingNoOp("slice_e_live_dry_run");
 
   if (!input.meToken) {
     return {
       ok: false,
       agent: "agent1",
-      slice: "E-prep",
+      slice: "E-live",
       wouldExecute: false,
       broadcast: false,
       error: "missing_metoken",
@@ -198,7 +199,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "E-prep",
+      slice: "E-live",
       wouldExecute: false,
       broadcast: false,
       error: "missing_amount",
@@ -212,7 +213,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "E-prep",
+      slice: "E-live",
       wouldExecute: false,
       broadcast: false,
       error: "invalid_amount",
@@ -225,7 +226,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "E-prep",
+      slice: "E-live",
       wouldExecute: false,
       broadcast: false,
       error: "oversize",
@@ -245,7 +246,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "E-prep",
+      slice: "E-live",
       wouldExecute: false,
       broadcast: false,
       error: failure.reason,
@@ -254,13 +255,15 @@ export async function dryRunUsdcToMeToken(input: {
     };
   }
 
-  const warnings: string[] = ["slice_e_prep_dry_run_only", "no_broadcast"];
+  const warnings: string[] = ["dry_run_plan_only", "no_broadcast"];
 
   if (!venueStatus.venue.routerConfirmed) {
     warnings.push("router_unconfirmed");
     warnings.push("mint_abi_provisional");
+  } else if (!venueStatus.gates.broadcastAllowed) {
+    warnings.push("router_confirmed_broadcast_gated");
   } else {
-    warnings.push("router_confirmed_read_only");
+    warnings.push("broadcast_gates_open_but_dry_run_never_sends");
   }
 
   if (policy.gates.killSwitch) {
@@ -280,7 +283,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "E-prep",
+      slice: "E-live",
       wouldExecute: false,
       broadcast: false,
       error: "quote_failed",
@@ -347,7 +350,7 @@ export async function dryRunUsdcToMeToken(input: {
   return {
     ok: true,
     agent: "agent1",
-    slice: "E-prep",
+    slice: "E-live",
     wouldExecute: false,
     broadcast: false,
     meToken: {

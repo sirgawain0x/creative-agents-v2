@@ -31,7 +31,7 @@ export async function GET() {
   return NextResponse.json({
     status: subgraphError ? "degraded" : "ok",
     agent: "agent1",
-    slice: "E-prep",
+    slice: "E-live",
     trading: policy.trading,
     venue: venue.venue,
     tick: {

@@ -1,4 +1,5 @@
 import { parseDeniedMeTokens } from "@/lib/agent1/deny-list";
+import { isAgent1BroadcastEnabled } from "@/lib/agent1/signer";
 import { getTickStoreMeta } from "@/lib/agent1/tick-state";
 import { getAgent1VenueStatus } from "@/lib/agent1/venue";
 import { logger } from "@/lib/logger";
@@ -18,11 +19,12 @@ export interface Agent1PolicyLimits {
 export interface Agent1PolicyGates {
   tradingEnabled: boolean;
   killSwitch: boolean;
+  broadcastEnabled: boolean;
 }
 
 export interface Agent1Policy {
   agent: "agent1";
-  version: "slice-e-prep";
+  version: "slice-e-live";
   subgraph: {
     providerMode: "studio" | "goldsky" | "dual";
     studioUrl: string;
@@ -31,8 +33,8 @@ export interface Agent1Policy {
   limits: Agent1PolicyLimits;
   gates: Agent1PolicyGates;
   trading: {
-    /** disabled = gates closed; dry_run = gates open but never broadcasts (Slice E prep) */
-    mode: "disabled" | "dry_run";
+    /** disabled = gates closed; dry_run = plan only; live = broadcast allowed when venue/signer pass */
+    mode: "disabled" | "dry_run" | "live";
     reason: string;
   };
   tick: {
@@ -48,6 +50,7 @@ export interface Agent1Policy {
   > & {
     diamondAddress: string;
     hub2UsdcVault: string;
+    broadcastAllowed: boolean;
   };
 }
 
@@ -88,8 +91,14 @@ function parsePositiveNumber(
 export function getAgent1Policy(): Agent1Policy {
   const tradingEnabled = parseBoolean(process.env.TRADING_ENABLED, false);
   const killSwitch = parseBoolean(process.env.KILL_SWITCH, false);
+  const broadcastEnabled = isAgent1BroadcastEnabled();
   const tradingBlocked = !tradingEnabled || killSwitch;
   const venueStatus = getAgent1VenueStatus();
+  const liveEligible =
+    !tradingBlocked &&
+    broadcastEnabled &&
+    venueStatus.venue.routerConfirmed &&
+    venueStatus.gates.broadcastAllowed;
 
   const limits: Agent1PolicyLimits = {
     maxTradeUsdc: parsePositiveNumber(process.env.MAX_TRADE_USDC, 25, "MAX_TRADE_USDC"),
@@ -110,15 +119,30 @@ export function getAgent1Policy(): Agent1Policy {
   const deniedMeTokens = Array.from(parseDeniedMeTokens(process.env.AGENT1_DENIED_METOKENS));
 
   let reason = "trading_disabled_by_default";
+  let mode: Agent1Policy["trading"]["mode"] = "disabled";
   if (killSwitch) {
     reason = "kill_switch_active";
-  } else if (tradingEnabled) {
-    reason = "trading_enabled_but_slice_e_prep_dry_run_only";
+    mode = "disabled";
+  } else if (!tradingEnabled) {
+    reason = "trading_disabled_by_default";
+    mode = "disabled";
+  } else if (liveEligible) {
+    reason = "live_broadcast_enabled";
+    mode = "live";
+  } else if (!broadcastEnabled) {
+    reason = "trading_enabled_dry_run_only_broadcast_disabled";
+    mode = "dry_run";
+  } else if (!venueStatus.venue.routerConfirmed) {
+    reason = "trading_enabled_dry_run_only_router_unconfirmed";
+    mode = "dry_run";
+  } else {
+    reason = "trading_enabled_dry_run_only";
+    mode = "dry_run";
   }
 
   return {
     agent: "agent1",
-    version: "slice-e-prep",
+    version: "slice-e-live",
     subgraph: {
       providerMode: getSubgraphProviderMode(),
       studioUrl,
@@ -128,9 +152,10 @@ export function getAgent1Policy(): Agent1Policy {
     gates: {
       tradingEnabled,
       killSwitch,
+      broadcastEnabled,
     },
     trading: {
-      mode: tradingBlocked ? "disabled" : "dry_run",
+      mode,
       reason,
     },
     tick: {
@@ -147,8 +172,38 @@ export function getAgent1Policy(): Agent1Policy {
       mintPath: venueStatus.venue.mintPath,
       diamondAddress: venueStatus.venue.addresses.diamond,
       hub2UsdcVault: venueStatus.venue.addresses.hub2UsdcVault,
+      broadcastAllowed: venueStatus.gates.broadcastAllowed,
     },
   };
+}
+
+export interface TradingBroadcastEligibility {
+  allowed: boolean;
+  reason: string;
+  policy: Agent1Policy;
+}
+
+/** Evaluates whether tick may attempt wallet_sendPreparedCalls (fail-closed). */
+export function getTradingBroadcastEligibility(): TradingBroadcastEligibility {
+  const policy = getAgent1Policy();
+
+  if (policy.gates.killSwitch) {
+    return { allowed: false, reason: "kill_switch_active", policy };
+  }
+  if (!policy.gates.tradingEnabled) {
+    return { allowed: false, reason: "trading_disabled", policy };
+  }
+  if (!policy.gates.broadcastEnabled) {
+    return { allowed: false, reason: "broadcast_disabled", policy };
+  }
+  if (!policy.venue.routerConfirmed) {
+    return { allowed: false, reason: "router_unconfirmed", policy };
+  }
+  if (!policy.venue.broadcastAllowed || policy.trading.mode !== "live") {
+    return { allowed: false, reason: "dry_run_only", policy };
+  }
+
+  return { allowed: true, reason: "broadcast_gates_open", policy };
 }
 
 export interface TradingNoOpResult {
@@ -157,26 +212,33 @@ export interface TradingNoOpResult {
   policy: Agent1Policy;
 }
 
+/** Always non-executing — use getTradingBroadcastEligibility + tick send for live. */
 export function executeTradingNoOp(intent?: string): TradingNoOpResult {
-  const policy = getAgent1Policy();
-  const blocked = !policy.gates.tradingEnabled || policy.gates.killSwitch;
-
-  const reason = blocked
-    ? policy.gates.killSwitch
-      ? "kill_switch_active"
-      : "trading_disabled"
-    : "slice_e_prep_dry_run_only";
+  const eligibility = getTradingBroadcastEligibility();
+  const reason = eligibility.allowed
+    ? "broadcast_gates_open_awaiting_tick_send"
+    : eligibility.reason === "trading_disabled"
+      ? "trading_disabled"
+      : eligibility.reason === "kill_switch_active"
+        ? "kill_switch_active"
+        : eligibility.reason === "broadcast_disabled" ||
+            eligibility.reason === "router_unconfirmed" ||
+            eligibility.reason === "dry_run_only"
+          ? "slice_e_live_dry_run_only"
+          : eligibility.reason;
 
   logger.info("trading_noop", {
     intent,
     reason,
-    tradingEnabled: policy.gates.tradingEnabled,
-    killSwitch: policy.gates.killSwitch,
+    tradingEnabled: eligibility.policy.gates.tradingEnabled,
+    killSwitch: eligibility.policy.gates.killSwitch,
+    broadcastEnabled: eligibility.policy.gates.broadcastEnabled,
+    mode: eligibility.policy.trading.mode,
   });
 
   return {
     executed: false,
     reason,
-    policy,
+    policy: eligibility.policy,
   };
 }

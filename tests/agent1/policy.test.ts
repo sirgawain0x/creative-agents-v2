@@ -1,11 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { executeTradingNoOp, getAgent1Policy } from "@/lib/agent1/policy";
+import {
+  executeTradingNoOp,
+  getAgent1Policy,
+  getTradingBroadcastEligibility,
+} from "@/lib/agent1/policy";
+import { STAGING_METOKENS_DIAMOND_ADDRESS } from "@/lib/agent1/constants";
 
-describe("getAgent1Policy slice E prep", () => {
+describe("getAgent1Policy slice E live", () => {
   beforeEach(() => {
     delete process.env.TRADING_ENABLED;
     delete process.env.KILL_SWITCH;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
+    delete process.env.AGENT1_ROUTER_CONFIRMED;
+    delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     delete process.env.KV_REST_API_URL;
@@ -15,6 +23,9 @@ describe("getAgent1Policy slice E prep", () => {
   afterEach(() => {
     delete process.env.TRADING_ENABLED;
     delete process.env.KILL_SWITCH;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
+    delete process.env.AGENT1_ROUTER_CONFIRMED;
+    delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
     delete process.env.KV_REST_API_URL;
@@ -23,20 +34,35 @@ describe("getAgent1Policy slice E prep", () => {
 
   it("defaults to disabled dry-run gates", () => {
     const policy = getAgent1Policy();
-    expect(policy.version).toBe("slice-e-prep");
+    expect(policy.version).toBe("slice-e-live");
     expect(policy.trading.mode).toBe("disabled");
     expect(policy.gates.tradingEnabled).toBe(false);
+    expect(policy.gates.broadcastEnabled).toBe(false);
     expect(policy.tick.store.backend).toBe("memory");
     expect(policy.venue.routerConfirmed).toBe(false);
+    expect(policy.venue.broadcastAllowed).toBe(false);
   });
 
-  it("uses dry_run mode when trading enabled without kill switch", () => {
+  it("uses dry_run mode when trading enabled without broadcast", () => {
     process.env.TRADING_ENABLED = "true";
     process.env.KILL_SWITCH = "false";
 
     const policy = getAgent1Policy();
     expect(policy.trading.mode).toBe("dry_run");
-    expect(policy.trading.reason).toBe("trading_enabled_but_slice_e_prep_dry_run_only");
+    expect(policy.trading.reason).toBe("trading_enabled_dry_run_only_broadcast_disabled");
+  });
+
+  it("uses live mode only when every broadcast gate is open", () => {
+    process.env.TRADING_ENABLED = "true";
+    process.env.KILL_SWITCH = "false";
+    process.env.AGENT1_BROADCAST_ENABLED = "true";
+    process.env.AGENT1_ROUTER_CONFIRMED = "true";
+    process.env.AGENT1_METOKENS_DIAMOND_ADDRESS = STAGING_METOKENS_DIAMOND_ADDRESS;
+
+    const policy = getAgent1Policy();
+    expect(policy.trading.mode).toBe("live");
+    expect(policy.trading.reason).toBe("live_broadcast_enabled");
+    expect(policy.venue.broadcastAllowed).toBe(true);
   });
 
   it("reports upstash backend when redis env is set", () => {
@@ -68,10 +94,16 @@ describe("getAgent1Policy slice E prep", () => {
     expect(policy.tick.store.persistent).toBe(true);
   });
 
-  it("executeTradingNoOp never executes", () => {
+  it("executeTradingNoOp never executes when gates are closed", () => {
     process.env.TRADING_ENABLED = "true";
     const result = executeTradingNoOp("test");
     expect(result.executed).toBe(false);
-    expect(result.reason).toBe("slice_e_prep_dry_run_only");
+    expect(result.reason).toBe("slice_e_live_dry_run_only");
+  });
+
+  it("getTradingBroadcastEligibility is fail-closed by default", () => {
+    const eligibility = getTradingBroadcastEligibility();
+    expect(eligibility.allowed).toBe(false);
+    expect(eligibility.reason).toBe("trading_disabled");
   });
 });
