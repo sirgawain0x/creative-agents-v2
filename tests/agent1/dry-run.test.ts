@@ -87,7 +87,7 @@ describe("dryRunUsdcToMeToken", () => {
       return;
     }
 
-    expect(result.slice).toBe("C");
+    expect(result.slice).toBe("E-prep");
     expect(result.wouldExecute).toBe(false);
     expect(result.broadcast).toBe(false);
     expect(result.plannedCalls).toHaveLength(2);
@@ -95,7 +95,7 @@ describe("dryRunUsdcToMeToken", () => {
     expect(result.plannedCalls[1]?.step).toBe("mint_metoken");
     expect(result.alchemyPrepare.attempted).toBe(false);
     expect(result.trading.executed).toBe(false);
-    expect(result.warnings).toContain("slice_c_dry_run_only");
+    expect(result.warnings).toContain("slice_e_prep_dry_run_only");
   });
 
   it("rejects oversize amounts", async () => {

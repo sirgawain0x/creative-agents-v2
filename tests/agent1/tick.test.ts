@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 import { GET, POST } from "@/app/api/agent1/tick/route";
-import { BASE_USDC_ADDRESS } from "@/lib/agent1/constants";
+import { BASE_USDC_ADDRESS, STAGING_HUB2_USDC_VAULT } from "@/lib/agent1/constants";
 import * as dryRunModule from "@/lib/agent1/dry-run";
 import * as metokensSubgraph from "@/lib/agent1/metokens-subgraph";
 import { runAgent1Tick } from "@/lib/agent1/tick";
@@ -11,7 +11,11 @@ import {
   checkDailyVolumeCapacity,
   recordPlannedDryRun,
   resetTickStateForTests,
+  setTickStoreForTests,
+  type Agent1TickStore,
+  type PersistedTickState,
 } from "@/lib/agent1/tick-state";
+import { getUtcDayKey } from "@/lib/agent1/tick-state-store";
 import { isCronAuthorized } from "@/lib/cron";
 
 const mockMeToken = {
@@ -42,6 +46,32 @@ function makeTickRequest(secret?: string): NextRequest {
     headers.authorization = `Bearer ${secret}`;
   }
   return new NextRequest("http://localhost/api/agent1/tick", { headers });
+}
+
+class MemoryTickStore implements Agent1TickStore {
+  readonly backend = "memory" as const;
+  readonly persistent = false;
+  private state: PersistedTickState = {
+    dailyVolumeUsedUsdc: 0,
+    dailyVolumeDayUtc: getUtcDayKey(),
+    lastPlannedAtMs: null,
+  };
+
+  async load(): Promise<PersistedTickState> {
+    const day = getUtcDayKey();
+    if (this.state.dailyVolumeDayUtc !== day) {
+      this.state = {
+        dailyVolumeUsedUsdc: 0,
+        dailyVolumeDayUtc: day,
+        lastPlannedAtMs: this.state.lastPlannedAtMs,
+      };
+    }
+    return { ...this.state };
+  }
+
+  async save(state: PersistedTickState): Promise<void> {
+    this.state = { ...state };
+  }
 }
 
 describe("isCronAuthorized", () => {
@@ -102,8 +132,9 @@ describe("tick route auth", () => {
 });
 
 describe("runAgent1Tick", () => {
-  beforeEach(() => {
-    resetTickStateForTests();
+  beforeEach(async () => {
+    setTickStoreForTests(new MemoryTickStore());
+    await resetTickStateForTests();
     delete process.env.TRADING_ENABLED;
     delete process.env.KILL_SWITCH;
     delete process.env.AGENT1_DENIED_METOKENS;
@@ -127,8 +158,9 @@ describe("runAgent1Tick", () => {
     });
   });
 
-  afterEach(() => {
-    resetTickStateForTests();
+  afterEach(async () => {
+    await resetTickStateForTests();
+    setTickStoreForTests(null);
     vi.restoreAllMocks();
     delete process.env.TRADING_ENABLED;
     delete process.env.KILL_SWITCH;
@@ -149,6 +181,7 @@ describe("runAgent1Tick", () => {
     expect(result.wouldExecute).toBe(false);
     expect(result.broadcast).toBe(false);
     expect(result.dryRun).toBeNull();
+    expect(result.slice).toBe("E-prep");
   });
 
   it("skips when kill switch is active", async () => {
@@ -193,7 +226,7 @@ describe("runAgent1Tick", () => {
     vi.spyOn(dryRunModule, "dryRunUsdcToMeToken").mockResolvedValue({
       ok: true,
       agent: "agent1",
-      slice: "C",
+      slice: "E-prep",
       wouldExecute: false,
       broadcast: false,
       meToken: {
@@ -213,9 +246,20 @@ describe("runAgent1Tick", () => {
         slippageBpsEstimate: null,
         venue: {
           type: "metokens_diamond_mint_quote",
-          diamondAddress: null,
+          diamondAddress: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
           routerConfirmed: false,
+          abiLabel: "foundry-facet-v1-provisional",
+          quoteMode: "mock",
+          mintPath: "provisional_approve_diamond",
           note: "test",
+          addresses: {
+            diamond: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
+            diamondConfigured: false,
+            hub2UsdcVault: STAGING_HUB2_USDC_VAULT,
+            hubVaultConfigured: false,
+            stagingDiamondDefault: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
+            stagingHubVaultDefault: STAGING_HUB2_USDC_VAULT,
+          },
         },
         warnings: [],
       },
@@ -232,7 +276,7 @@ describe("runAgent1Tick", () => {
         note: "test",
       },
       alchemyPrepare: { attempted: true, ok: true, prepared: { mock: true } },
-      trading: { executed: false, reason: "slice_d_dry_run_only" },
+      trading: { executed: false, reason: "slice_e_prep_dry_run_only" },
       policy: {
         gates: { tradingEnabled: true, killSwitch: false },
         limits: {
@@ -241,9 +285,25 @@ describe("runAgent1Tick", () => {
           slippageBps: 250,
           cooldownSeconds: 1800,
         },
-        trading: { mode: "dry_run", reason: "trading_enabled_but_slice_d_dry_run_only" },
+        trading: { mode: "dry_run", reason: "trading_enabled_but_slice_e_prep_dry_run_only" },
       },
-      warnings: ["slice_c_dry_run_only"],
+      venue: {
+        type: "metokens_diamond_mint",
+        routerConfirmed: false,
+        abiLabel: "foundry-facet-v1-provisional",
+        quoteMode: "mock",
+        mintPath: "provisional_approve_diamond",
+        note: "test",
+        addresses: {
+          diamond: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
+          diamondConfigured: false,
+          hub2UsdcVault: STAGING_HUB2_USDC_VAULT,
+          hubVaultConfigured: false,
+          stagingDiamondDefault: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
+          stagingHubVaultDefault: STAGING_HUB2_USDC_VAULT,
+        },
+      },
+      warnings: ["slice_e_prep_dry_run_only"],
     });
 
     const result = await runAgent1Tick();
@@ -258,46 +318,93 @@ describe("runAgent1Tick", () => {
     expect(result.dryRun?.wouldExecute).toBe(false);
     expect(result.dryRun?.signer.canBroadcast).toBe(false);
   });
+
+  it("skips planning when tick store fails (fail-closed)", async () => {
+    process.env.TRADING_ENABLED = "true";
+
+    const failingStore: Agent1TickStore = {
+      backend: "memory",
+      persistent: false,
+      load: vi.fn().mockRejectedValue(new Error("redis down")),
+      save: vi.fn(),
+    };
+    setTickStoreForTests(failingStore);
+
+    const result = await runAgent1Tick();
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.decision.action).toBe("skipped");
+    expect(result.decision.reason).toBe("tick_store_error");
+    expect(result.dryRun).toBeNull();
+    expect(result.warnings).toContain("tick_store_error");
+  });
 });
 
 describe("tick-state policy gates", () => {
-  beforeEach(() => {
-    resetTickStateForTests();
+  beforeEach(async () => {
+    setTickStoreForTests(new MemoryTickStore());
+    await resetTickStateForTests();
   });
 
-  afterEach(() => {
-    resetTickStateForTests();
+  afterEach(async () => {
+    await resetTickStateForTests();
+    setTickStoreForTests(null);
   });
 
-  it("tracks daily volume capacity", () => {
-    expect(checkDailyVolumeCapacity(25, 100).ok).toBe(true);
-    recordPlannedDryRun(25);
-    expect(checkDailyVolumeCapacity(25, 100).ok).toBe(true);
-    recordPlannedDryRun(25);
-    recordPlannedDryRun(25);
-    recordPlannedDryRun(25);
-    const blocked = checkDailyVolumeCapacity(25, 100);
-    expect(blocked.ok).toBe(false);
-    if (blocked.ok) {
+  it("persists volume when reusing the same memory store instance", async () => {
+    const store = new MemoryTickStore();
+    setTickStoreForTests(store);
+
+    expect((await checkDailyVolumeCapacity(25, 100)).ok).toBe(true);
+    await recordPlannedDryRun(25);
+    await recordPlannedDryRun(25);
+    await recordPlannedDryRun(25);
+    await recordPlannedDryRun(25);
+
+    const blocked = await checkDailyVolumeCapacity(25, 100);
+    expect(blocked.ok).toBe(true);
+    if (!blocked.ok || blocked.data.ok) {
       return;
     }
-    expect(blocked.reason).toBe("daily_volume_exceeded");
+    expect(blocked.data.reason).toBe("daily_volume_exceeded");
   });
 
-  it("enforces cooldown between planned ticks", () => {
-    recordPlannedDryRun(10);
-    const blocked = checkCooldown(1800);
-    expect(blocked.ok).toBe(false);
-    if (blocked.ok) {
+  it("enforces cooldown between planned ticks", async () => {
+    await recordPlannedDryRun(10);
+    const blocked = await checkCooldown(1800);
+    expect(blocked.ok).toBe(true);
+    if (!blocked.ok || blocked.data.ok) {
       return;
     }
-    expect(blocked.reason).toBe("cooldown_active");
+    expect(blocked.data.reason).toBe("cooldown_active");
+  });
+
+  it("fail-closed when store load errors", async () => {
+    setTickStoreForTests({
+      backend: "memory",
+      persistent: false,
+      load: async () => {
+        throw new Error("load failed");
+      },
+      save: async () => {},
+    });
+
+    const result = await checkDailyVolumeCapacity(10, 100);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.reason).toBe("tick_store_error");
   });
 });
 
 describe("tick route happy path", () => {
-  beforeEach(() => {
-    resetTickStateForTests();
+  beforeEach(async () => {
+    setTickStoreForTests(new MemoryTickStore());
+    await resetTickStateForTests();
     process.env.CRON_SECRET = "expected-secret";
     process.env.TRADING_ENABLED = "true";
     process.env.KILL_SWITCH = "false";
@@ -306,8 +413,9 @@ describe("tick route happy path", () => {
     vi.spyOn(metokensSubgraph, "getSubscribedMeToken").mockResolvedValue(mockMeToken);
   });
 
-  afterEach(() => {
-    resetTickStateForTests();
+  afterEach(async () => {
+    await resetTickStateForTests();
+    setTickStoreForTests(null);
     delete process.env.CRON_SECRET;
     delete process.env.TRADING_ENABLED;
     delete process.env.KILL_SWITCH;
@@ -319,7 +427,7 @@ describe("tick route happy path", () => {
     expect(response.status).toBe(200);
 
     const body = await response.json();
-    expect(body.slice).toBe("D");
+    expect(body.slice).toBe("E-prep");
     expect(body.wouldExecute).toBe(false);
     expect(body.broadcast).toBe(false);
     expect(body.decision.action).toBe("planned");

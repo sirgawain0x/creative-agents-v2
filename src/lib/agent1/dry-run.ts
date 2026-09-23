@@ -8,7 +8,6 @@ import { base } from "viem/chains";
 
 import {
   BASE_USDC_ADDRESS,
-  STAGING_METOKENS_DIAMOND_ADDRESS,
   USDC_DECIMALS,
 } from "@/lib/agent1/constants";
 import {
@@ -23,27 +22,18 @@ import {
   type Agent1SignerStatus,
 } from "@/lib/agent1/signer";
 import {
+  confirmedMintAbi,
+  getAgent1VenueStatus,
+  getEffectiveDiamondAddress,
+  getEffectiveHubVaultAddress,
+  provisionalMintAbi,
+  VENUE_ABI_LABEL_CONFIRMED,
+} from "@/lib/agent1/venue";
+import {
   validateMeTokenUniverse,
   type UniverseValidationFailure,
 } from "@/lib/agent1/universe";
 import { logger } from "@/lib/logger";
-
-/**
- * Provisional FoundryFacet mint ABI for dry-run calldata only.
- * G2 must confirm diamond address + ABI before Slice E live execute.
- */
-const mintAbi = [
-  {
-    type: "function",
-    name: "mint",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "meToken", type: "address" },
-      { name: "assetsDeposited", type: "uint256" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
 
 const erc20ApproveAbi = [
   {
@@ -69,7 +59,7 @@ export interface PlannedCall {
 export interface Agent1DryRunSuccess {
   ok: true;
   agent: "agent1";
-  slice: "C";
+  slice: "E-prep";
   wouldExecute: false;
   broadcast: false;
   meToken: {
@@ -90,13 +80,14 @@ export interface Agent1DryRunSuccess {
     reason: string;
   };
   policy: Pick<Agent1Policy, "gates" | "limits" | "trading">;
+  venue: ReturnType<typeof getAgent1VenueStatus>["venue"];
   warnings: string[];
 }
 
 export interface Agent1DryRunFailure {
   ok: false;
   agent: "agent1";
-  slice: "C";
+  slice: "E-prep";
   wouldExecute: false;
   broadcast: false;
   error: string;
@@ -106,41 +97,62 @@ export interface Agent1DryRunFailure {
 
 export type Agent1DryRunResult = Agent1DryRunSuccess | Agent1DryRunFailure;
 
-function getDiamondAddressForPlan(): Address {
-  const configured = process.env.AGENT1_METOKENS_DIAMOND_ADDRESS?.trim();
-  if (configured) {
-    return configured as Address;
-  }
-  return STAGING_METOKENS_DIAMOND_ADDRESS;
-}
-
 function shouldAttemptAlchemyPrepare(signer: Agent1SignerStatus): boolean {
   if (!signer.canPrepareCalls) {
     return false;
   }
   const flag = process.env.AGENT1_DRY_RUN_PREPARE?.trim().toLowerCase();
-  // Default ON when credentials exist; set AGENT1_DRY_RUN_PREPARE=false to skip remote prepare.
   if (flag === "0" || flag === "false" || flag === "off" || flag === "no") {
     return false;
   }
   return true;
 }
 
+function resolveMintRecipient(): Address | null {
+  const wallet = process.env.AGENT1_WALLET_ADDRESS?.trim();
+  if (!wallet) {
+    return null;
+  }
+  return wallet as Address;
+}
+
 function buildPlannedCalls(meToken: Address, usdcAmount: string): PlannedCall[] {
-  const diamond = getDiamondAddressForPlan();
+  const venue = getAgent1VenueStatus().venue;
+  const diamond = getEffectiveDiamondAddress();
   const usdcRaw = parseUnits(usdcAmount, USDC_DECIMALS);
+  const routerConfirmed = venue.routerConfirmed;
+
+  const approveSpender = routerConfirmed ? getEffectiveHubVaultAddress() : diamond;
 
   const approveData = encodeFunctionData({
     abi: erc20ApproveAbi,
     functionName: "approve",
-    args: [diamond, usdcRaw],
+    args: [approveSpender, usdcRaw],
   });
 
-  const mintData = encodeFunctionData({
-    abi: mintAbi,
-    functionName: "mint",
-    args: [meToken, usdcRaw],
-  });
+  let mintData: Hex;
+  if (routerConfirmed) {
+    const recipient = resolveMintRecipient() ?? meToken;
+    mintData = encodeFunctionData({
+      abi: confirmedMintAbi,
+      functionName: "mint",
+      args: [meToken, usdcRaw, recipient],
+    });
+  } else {
+    mintData = encodeFunctionData({
+      abi: provisionalMintAbi,
+      functionName: "mint",
+      args: [meToken, usdcRaw],
+    });
+  }
+
+  const approveDescription = routerConfirmed
+    ? `Approve ${usdcAmount} USDC to Hub-2 vault (${approveSpender}) for mint`
+    : `Approve ${usdcAmount} USDC to MeTokens diamond (provisional path)`;
+
+  const mintDescription = routerConfirmed
+    ? `Mint MeToken ${meToken} via confirmed FoundryFacet (${VENUE_ABI_LABEL_CONFIRMED})`
+    : `Mint MeToken ${meToken} by depositing ${usdcAmount} USDC (provisional ABI)`;
 
   return [
     {
@@ -148,14 +160,14 @@ function buildPlannedCalls(meToken: Address, usdcAmount: string): PlannedCall[] 
       to: BASE_USDC_ADDRESS,
       data: approveData,
       value: "0x0",
-      description: `Approve ${usdcAmount} USDC to MeTokens diamond for mint`,
+      description: approveDescription,
     },
     {
       step: "mint_metoken",
       to: diamond,
       data: mintData,
       value: "0x0",
-      description: `Mint MeToken ${meToken} by depositing ${usdcAmount} USDC (staging ABI)`,
+      description: mintDescription,
     },
   ];
 }
@@ -166,13 +178,14 @@ export async function dryRunUsdcToMeToken(input: {
 }): Promise<Agent1DryRunResult> {
   const policy = getAgent1Policy();
   const signer = getAgent1SignerStatus();
-  const tradingNoOp = executeTradingNoOp("slice_c_dry_run");
+  const venueStatus = getAgent1VenueStatus();
+  const tradingNoOp = executeTradingNoOp("slice_e_prep_dry_run");
 
   if (!input.meToken) {
     return {
       ok: false,
       agent: "agent1",
-      slice: "C",
+      slice: "E-prep",
       wouldExecute: false,
       broadcast: false,
       error: "missing_metoken",
@@ -185,7 +198,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "C",
+      slice: "E-prep",
       wouldExecute: false,
       broadcast: false,
       error: "missing_amount",
@@ -199,7 +212,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "C",
+      slice: "E-prep",
       wouldExecute: false,
       broadcast: false,
       error: "invalid_amount",
@@ -212,7 +225,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "C",
+      slice: "E-prep",
       wouldExecute: false,
       broadcast: false,
       error: "oversize",
@@ -232,7 +245,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "C",
+      slice: "E-prep",
       wouldExecute: false,
       broadcast: false,
       error: failure.reason,
@@ -241,11 +254,14 @@ export async function dryRunUsdcToMeToken(input: {
     };
   }
 
-  const warnings: string[] = [
-    "slice_c_dry_run_only",
-    "router_unconfirmed",
-    "mint_abi_provisional",
-  ];
+  const warnings: string[] = ["slice_e_prep_dry_run_only", "no_broadcast"];
+
+  if (!venueStatus.venue.routerConfirmed) {
+    warnings.push("router_unconfirmed");
+    warnings.push("mint_abi_provisional");
+  } else {
+    warnings.push("router_confirmed_read_only");
+  }
 
   if (policy.gates.killSwitch) {
     warnings.push("kill_switch_active");
@@ -264,7 +280,7 @@ export async function dryRunUsdcToMeToken(input: {
     return {
       ok: false,
       agent: "agent1",
-      slice: "C",
+      slice: "E-prep",
       wouldExecute: false,
       broadcast: false,
       error: "quote_failed",
@@ -325,12 +341,13 @@ export async function dryRunUsdcToMeToken(input: {
     usdcAmount: String(usdcAmountNumber),
     prepareAttempted: alchemyPrepare.attempted,
     tradingReason: tradingNoOp.reason,
+    routerConfirmed: venueStatus.venue.routerConfirmed,
   });
 
   return {
     ok: true,
     agent: "agent1",
-    slice: "C",
+    slice: "E-prep",
     wouldExecute: false,
     broadcast: false,
     meToken: {
@@ -352,6 +369,7 @@ export async function dryRunUsdcToMeToken(input: {
       limits: policy.limits,
       trading: policy.trading,
     },
+    venue: venueStatus.venue,
     warnings,
   };
 }
