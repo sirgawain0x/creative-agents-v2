@@ -3,8 +3,8 @@ export default function HomePage() {
     <main>
       <h1>Creative Agents</h1>
       <p>
-        Slice C — Alchemy Agent Wallet dry-run (no live trading). See README for API routes and
-        deployment.
+        Slice D — cron tick loop with policy → quote / dry-run planning (no live trading). See
+        README for API routes and deployment.
       </p>
     </main>
   );
