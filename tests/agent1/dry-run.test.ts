@@ -24,6 +24,7 @@ describe("getAgent1SignerStatus", () => {
     delete process.env.ALCHEMY_WALLET_API_KEY;
     delete process.env.ALCHEMY_GAS_POLICY_ID;
     delete process.env.AGENT1_WALLET_ADDRESS;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
   });
 
   afterEach(() => {
@@ -31,6 +32,7 @@ describe("getAgent1SignerStatus", () => {
     delete process.env.ALCHEMY_WALLET_API_KEY;
     delete process.env.ALCHEMY_GAS_POLICY_ID;
     delete process.env.AGENT1_WALLET_ADDRESS;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
   });
 
   it("reports unconfigured when credentials missing", () => {
@@ -41,7 +43,7 @@ describe("getAgent1SignerStatus", () => {
     expect(status.mode).toBe("unconfigured");
   });
 
-  it("reports configured when API key + wallet address are set", () => {
+  it("reports configured prepare without broadcast by default", () => {
     process.env.ALCHEMY_API_KEY = "test-key";
     process.env.AGENT1_WALLET_ADDRESS = "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10";
 
@@ -50,6 +52,95 @@ describe("getAgent1SignerStatus", () => {
     expect(status.canPrepareCalls).toBe(true);
     expect(status.canBroadcast).toBe(false);
     expect(status.mode).toBe("api_key");
+  });
+
+  it("enables canBroadcast only with AGENT1_BROADCAST_ENABLED", () => {
+    process.env.ALCHEMY_API_KEY = "test-key";
+    process.env.AGENT1_WALLET_ADDRESS = "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10";
+    process.env.AGENT1_BROADCAST_ENABLED = "true";
+
+    const status = signerModule.getAgent1SignerStatus();
+    expect(status.canBroadcast).toBe(true);
+  });
+});
+
+describe("sendPreparedAlchemyCalls", () => {
+  beforeEach(() => {
+    delete process.env.ALCHEMY_API_KEY;
+    delete process.env.AGENT1_WALLET_ADDRESS;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
+  });
+
+  afterEach(() => {
+    delete process.env.ALCHEMY_API_KEY;
+    delete process.env.AGENT1_WALLET_ADDRESS;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
+    vi.unstubAllGlobals();
+  });
+
+  it("blocks send when broadcast is disabled", async () => {
+    process.env.ALCHEMY_API_KEY = "test-key";
+    process.env.AGENT1_WALLET_ADDRESS = "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10";
+
+    const result = await signerModule.sendPreparedAlchemyCalls({
+      type: "user-operation-v070",
+      data: {},
+      signature: { type: "secp256k1", data: "0xabc" },
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.error).toBe("broadcast_disabled");
+  });
+
+  it("rejects unsigned prepared calls", async () => {
+    process.env.ALCHEMY_API_KEY = "test-key";
+    process.env.AGENT1_WALLET_ADDRESS = "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10";
+    process.env.AGENT1_BROADCAST_ENABLED = "true";
+
+    const result = await signerModule.sendPreparedAlchemyCalls({
+      type: "user-operation-v070",
+      data: {},
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.error).toBe("prepared_calls_unsigned");
+  });
+
+  it("sends signed prepared calls when broadcast is enabled", async () => {
+    process.env.ALCHEMY_API_KEY = "test-key";
+    process.env.AGENT1_WALLET_ADDRESS = "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10";
+    process.env.AGENT1_BROADCAST_ENABLED = "true";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ result: { id: "0xcall" } }),
+      }),
+    );
+
+    const signed = {
+      type: "user-operation-v070",
+      data: { sender: "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10" },
+      signature: { type: "secp256k1", data: "0xsig" },
+    };
+
+    const result = await signerModule.sendPreparedAlchemyCalls(signed);
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.result).toEqual({ id: "0xcall" });
+    expect(fetch).toHaveBeenCalledOnce();
+    const body = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string);
+    expect(body.method).toBe("wallet_sendPreparedCalls");
   });
 });
 
@@ -61,6 +152,7 @@ describe("dryRunUsdcToMeToken", () => {
     delete process.env.AGENT1_QUOTE_MODE;
     delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
     delete process.env.BASE_RPC_URL;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
     process.env.TRADING_ENABLED = "false";
     process.env.KILL_SWITCH = "false";
 
@@ -74,6 +166,7 @@ describe("dryRunUsdcToMeToken", () => {
     delete process.env.AGENT1_DRY_RUN_PREPARE;
     delete process.env.TRADING_ENABLED;
     delete process.env.KILL_SWITCH;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
   });
 
   it("returns a local dry-run plan without broadcasting", async () => {
@@ -87,7 +180,7 @@ describe("dryRunUsdcToMeToken", () => {
       return;
     }
 
-    expect(result.slice).toBe("E-prep");
+    expect(result.slice).toBe("E-live");
     expect(result.wouldExecute).toBe(false);
     expect(result.broadcast).toBe(false);
     expect(result.plannedCalls).toHaveLength(2);
@@ -95,7 +188,7 @@ describe("dryRunUsdcToMeToken", () => {
     expect(result.plannedCalls[1]?.step).toBe("mint_metoken");
     expect(result.alchemyPrepare.attempted).toBe(false);
     expect(result.trading.executed).toBe(false);
-    expect(result.warnings).toContain("slice_e_prep_dry_run_only");
+    expect(result.warnings).toContain("dry_run_plan_only");
   });
 
   it("rejects oversize amounts", async () => {
@@ -117,10 +210,16 @@ describe("dryRunUsdcToMeToken", () => {
     process.env.ALCHEMY_API_KEY = "test-key";
     process.env.AGENT1_WALLET_ADDRESS = "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10";
     process.env.AGENT1_DRY_RUN_PREPARE = "true";
+    process.env.AGENT1_BROADCAST_ENABLED = "true";
+    process.env.TRADING_ENABLED = "true";
 
     vi.spyOn(signerModule, "prepareAlchemyCalls").mockResolvedValue({
       ok: true,
-      prepared: { type: "user-operation-v070", data: { mock: true } },
+      prepared: {
+        type: "user-operation-v070",
+        data: { mock: true },
+        signature: { type: "secp256k1", data: "0xsig" },
+      },
     });
 
     const result = await dryRunModule.dryRunUsdcToMeToken({
@@ -135,7 +234,7 @@ describe("dryRunUsdcToMeToken", () => {
 
     expect(result.broadcast).toBe(false);
     expect(result.wouldExecute).toBe(false);
-    expect(result.signer.canBroadcast).toBe(false);
+    expect(result.signer.canBroadcast).toBe(true);
     expect(result.alchemyPrepare.attempted).toBe(true);
     if (result.alchemyPrepare.attempted) {
       expect(result.alchemyPrepare.ok).toBe(true);

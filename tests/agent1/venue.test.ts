@@ -25,6 +25,9 @@ describe("getAgent1VenueStatus", () => {
     delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
     delete process.env.AGENT1_HUB2_USDC_VAULT_ADDRESS;
     delete process.env.AGENT1_QUOTE_MODE;
+    delete process.env.TRADING_ENABLED;
+    delete process.env.KILL_SWITCH;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
   });
 
   afterEach(() => {
@@ -32,10 +35,14 @@ describe("getAgent1VenueStatus", () => {
     delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
     delete process.env.AGENT1_HUB2_USDC_VAULT_ADDRESS;
     delete process.env.AGENT1_QUOTE_MODE;
+    delete process.env.TRADING_ENABLED;
+    delete process.env.KILL_SWITCH;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
   });
 
   it("defaults routerConfirmed to false even when staging addresses exist", () => {
     const status = getAgent1VenueStatus();
+    expect(status.slice).toBe("E-live");
     expect(status.venue.routerConfirmed).toBe(false);
     expect(status.gates.broadcastAllowed).toBe(false);
     expect(status.venue.addresses.stagingDiamondDefault).toBe(STAGING_METOKENS_DIAMOND_ADDRESS);
@@ -58,6 +65,18 @@ describe("getAgent1VenueStatus", () => {
     expect(status.venue.routerConfirmed).toBe(true);
     expect(status.venue.mintPath).toBe("confirmed_approve_hub_vault");
     expect(status.venue.abiLabel).toBe("foundry-facet-v1-confirmed");
+    expect(status.gates.broadcastAllowed).toBe(false);
+  });
+
+  it("allows broadcast only when trading, broadcast, and router gates are open", () => {
+    process.env.TRADING_ENABLED = "true";
+    process.env.KILL_SWITCH = "false";
+    process.env.AGENT1_BROADCAST_ENABLED = "true";
+    process.env.AGENT1_ROUTER_CONFIRMED = "true";
+    process.env.AGENT1_METOKENS_DIAMOND_ADDRESS = STAGING_METOKENS_DIAMOND_ADDRESS;
+
+    const status = getAgent1VenueStatus();
+    expect(status.gates.broadcastAllowed).toBe(true);
   });
 });
 
@@ -69,6 +88,7 @@ describe("dryRun venue paths", () => {
     delete process.env.AGENT1_WALLET_ADDRESS;
     delete process.env.ALCHEMY_API_KEY;
     delete process.env.AGENT1_DRY_RUN_PREPARE;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
     process.env.TRADING_ENABLED = "false";
 
     vi.spyOn(metokensSubgraph, "getSubscribedMeToken").mockResolvedValue(mockMeToken);
@@ -84,6 +104,8 @@ describe("dryRun venue paths", () => {
     process.env.AGENT1_METOKENS_DIAMOND_ADDRESS = STAGING_METOKENS_DIAMOND_ADDRESS;
     process.env.AGENT1_HUB2_USDC_VAULT_ADDRESS = STAGING_HUB2_USDC_VAULT;
     process.env.AGENT1_WALLET_ADDRESS = "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10";
+    process.env.TRADING_ENABLED = "true";
+    process.env.AGENT1_BROADCAST_ENABLED = "true";
 
     const result = await dryRunUsdcToMeToken({
       meToken: mockMeToken.meToken,
@@ -99,5 +121,6 @@ describe("dryRun venue paths", () => {
     expect(result.wouldExecute).toBe(false);
     expect(result.venue.routerConfirmed).toBe(true);
     expect(result.plannedCalls[0]?.description).toContain("Hub-2 vault");
+    expect(result.warnings).toContain("broadcast_gates_open_but_dry_run_never_sends");
   });
 });

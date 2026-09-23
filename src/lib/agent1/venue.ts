@@ -5,6 +5,7 @@ import {
   STAGING_METOKENS_DIAMOND_ADDRESS,
 } from "@/lib/agent1/constants";
 import type { QuoteMode } from "@/lib/agent1/quote";
+import { isAgent1BroadcastEnabled } from "@/lib/agent1/signer";
 
 export const VENUE_ABI_LABEL_PROVISIONAL = "foundry-facet-v1-provisional";
 export const VENUE_ABI_LABEL_CONFIRMED = "foundry-facet-v1-confirmed";
@@ -108,9 +109,24 @@ export function getQuoteModeFromEnv(): QuoteMode {
   return "mock";
 }
 
+/**
+ * Live broadcast is allowed only when every Survival First gate is open.
+ * Reads trading env directly to avoid a circular import with policy.ts.
+ */
+export function isVenueBroadcastAllowed(routerConfirmed: boolean): boolean {
+  const tradingEnabled = parseBooleanEnv(process.env.TRADING_ENABLED);
+  const killSwitch = parseBooleanEnv(process.env.KILL_SWITCH);
+  return (
+    tradingEnabled &&
+    !killSwitch &&
+    routerConfirmed &&
+    isAgent1BroadcastEnabled()
+  );
+}
+
 export interface Agent1VenueStatus {
   agent: "agent1";
-  slice: "E-prep";
+  slice: "E-live";
   venue: {
     type: "metokens_diamond_mint";
     routerConfirmed: boolean;
@@ -128,9 +144,9 @@ export interface Agent1VenueStatus {
     note: string;
   };
   gates: {
-    /** Live execute still blocked regardless of router confirm */
-    broadcastAllowed: false;
+    broadcastAllowed: boolean;
     routerConfirmEnv: "AGENT1_ROUTER_CONFIRMED";
+    broadcastEnableEnv: "AGENT1_BROADCAST_ENABLED";
   };
 }
 
@@ -140,6 +156,7 @@ export function getAgent1VenueStatus(): Agent1VenueStatus {
   const diamondConfigured = Boolean(getConfiguredDiamondAddress());
   const hubVaultConfigured = Boolean(getConfiguredHubVaultAddress());
   const effectiveConfirmed = routerConfirmed && diamondConfigured;
+  const broadcastAllowed = isVenueBroadcastAllowed(effectiveConfirmed);
 
   const abiLabel = effectiveConfirmed ? VENUE_ABI_LABEL_CONFIRMED : VENUE_ABI_LABEL_PROVISIONAL;
   const mintPath = effectiveConfirmed
@@ -148,9 +165,12 @@ export function getAgent1VenueStatus(): Agent1VenueStatus {
 
   let note =
     "Creative Platform MeTokens diamond + hub vault addresses are staging candidates until G2 sets AGENT1_ROUTER_CONFIRMED=true.";
-  if (effectiveConfirmed) {
+  if (broadcastAllowed) {
     note =
-      "Router confirmed for read-only quotes and dry-run calldata (FoundryFacet + hub-2 USDC vault). Slice E live execute still requires funding and explicit broadcast enablement.";
+      "Venue confirmed and broadcast gates open (TRADING_ENABLED + AGENT1_BROADCAST_ENABLED + router confirm). Tick may call wallet_sendPreparedCalls when signed prepared calls are available.";
+  } else if (effectiveConfirmed) {
+    note =
+      "Router confirmed for quotes and dry-run calldata. Live broadcast still requires TRADING_ENABLED=true, KILL_SWITCH clear, and AGENT1_BROADCAST_ENABLED=true.";
   } else if (routerConfirmed && !diamondConfigured) {
     note =
       "AGENT1_ROUTER_CONFIRMED=true but AGENT1_METOKENS_DIAMOND_ADDRESS is unset — venue remains unconfirmed (fail-closed).";
@@ -158,7 +178,7 @@ export function getAgent1VenueStatus(): Agent1VenueStatus {
 
   return {
     agent: "agent1",
-    slice: "E-prep",
+    slice: "E-live",
     venue: {
       type: "metokens_diamond_mint",
       routerConfirmed: effectiveConfirmed,
@@ -176,8 +196,9 @@ export function getAgent1VenueStatus(): Agent1VenueStatus {
       note,
     },
     gates: {
-      broadcastAllowed: false,
+      broadcastAllowed,
       routerConfirmEnv: "AGENT1_ROUTER_CONFIRMED",
+      broadcastEnableEnv: "AGENT1_BROADCAST_ENABLED",
     },
   };
 }

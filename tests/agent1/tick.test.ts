@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 import { GET, POST } from "@/app/api/agent1/tick/route";
-import { BASE_USDC_ADDRESS, STAGING_HUB2_USDC_VAULT } from "@/lib/agent1/constants";
+import { BASE_USDC_ADDRESS, STAGING_HUB2_USDC_VAULT, STAGING_METOKENS_DIAMOND_ADDRESS } from "@/lib/agent1/constants";
 import * as dryRunModule from "@/lib/agent1/dry-run";
 import * as metokensSubgraph from "@/lib/agent1/metokens-subgraph";
+import * as signerModule from "@/lib/agent1/signer";
+import * as tickModel from "@/lib/agent1/tick-model";
 import { runAgent1Tick } from "@/lib/agent1/tick";
 import {
   checkCooldown,
@@ -74,6 +76,92 @@ class MemoryTickStore implements Agent1TickStore {
   }
 }
 
+function makeDryRunSuccess(overrides?: Partial<dryRunModule.Agent1DryRunSuccess>): dryRunModule.Agent1DryRunSuccess {
+  return {
+    ok: true,
+    agent: "agent1",
+    slice: "E-live",
+    wouldExecute: false,
+    broadcast: false,
+    meToken: {
+      address: mockMeToken.meToken,
+      symbol: mockMeToken.symbol,
+      name: mockMeToken.name,
+      hubId: mockMeToken.hubId,
+    },
+    quote: {
+      mode: "mock",
+      inputAsset: BASE_USDC_ADDRESS,
+      outputToken: mockMeToken.meToken,
+      usdcIn: "25",
+      usdcInRaw: "25000000",
+      meTokensOut: "8.75",
+      meTokensOutRaw: "8750000000000000000",
+      slippageBpsEstimate: null,
+      venue: {
+        type: "metokens_diamond_mint_quote",
+        diamondAddress: STAGING_METOKENS_DIAMOND_ADDRESS,
+        routerConfirmed: false,
+        abiLabel: "foundry-facet-v1-provisional",
+        quoteMode: "mock",
+        mintPath: "provisional_approve_diamond",
+        note: "test",
+        addresses: {
+          diamond: STAGING_METOKENS_DIAMOND_ADDRESS,
+          diamondConfigured: false,
+          hub2UsdcVault: STAGING_HUB2_USDC_VAULT,
+          hubVaultConfigured: false,
+          stagingDiamondDefault: STAGING_METOKENS_DIAMOND_ADDRESS,
+          stagingHubVaultDefault: STAGING_HUB2_USDC_VAULT,
+        },
+      },
+      warnings: [],
+    },
+    plannedCalls: [],
+    signer: {
+      slice: "C",
+      configured: true,
+      mode: "api_key",
+      address: "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10",
+      alchemyApiKeyPresent: true,
+      gasPolicyIdPresent: false,
+      canPrepareCalls: true,
+      canBroadcast: false,
+      note: "test",
+    },
+    alchemyPrepare: { attempted: true, ok: true, prepared: { mock: true } },
+    trading: { executed: false, reason: "slice_e_live_dry_run_only" },
+    policy: {
+      gates: { tradingEnabled: true, killSwitch: false, broadcastEnabled: false },
+      limits: {
+        maxTradeUsdc: 25,
+        dailyVolumeUsdc: 100,
+        slippageBps: 250,
+        cooldownSeconds: 1800,
+      },
+      trading: { mode: "dry_run", reason: "trading_enabled_dry_run_only_broadcast_disabled" },
+    },
+    venue: {
+      type: "metokens_diamond_mint",
+      routerConfirmed: false,
+      abiLabel: "foundry-facet-v1-provisional",
+      quoteMode: "mock",
+      mintPath: "provisional_approve_diamond",
+      note: "test",
+      addresses: {
+        diamond: STAGING_METOKENS_DIAMOND_ADDRESS,
+        diamondConfigured: false,
+        hub2UsdcVault: STAGING_HUB2_USDC_VAULT,
+        hubVaultConfigured: false,
+        stagingDiamondDefault: STAGING_METOKENS_DIAMOND_ADDRESS,
+        stagingHubVaultDefault: STAGING_HUB2_USDC_VAULT,
+      },
+    },
+    warnings: ["dry_run_plan_only"],
+    ...overrides,
+  };
+}
+
 describe("isCronAuthorized", () => {
   beforeEach(() => {
     delete process.env.CRON_SECRET;
@@ -123,6 +211,7 @@ describe("tick route auth", () => {
     expect(body.error).toBe("unauthorized");
     expect(body.wouldExecute).toBe(false);
     expect(body.broadcast).toBe(false);
+    expect(body.slice).toBe("E-live");
   });
 
   it("returns 401 when CRON_SECRET is unset (fail-closed)", async () => {
@@ -137,10 +226,16 @@ describe("runAgent1Tick", () => {
     await resetTickStateForTests();
     delete process.env.TRADING_ENABLED;
     delete process.env.KILL_SWITCH;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
+    delete process.env.AGENT1_ROUTER_CONFIRMED;
+    delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
     delete process.env.AGENT1_DENIED_METOKENS;
     delete process.env.AGENT1_TICK_MODEL_ENABLED;
     delete process.env.OLLAMA_BASE_URL;
     delete process.env.AI_GATEWAY_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.ALCHEMY_API_KEY;
+    delete process.env.AGENT1_WALLET_ADDRESS;
 
     vi.spyOn(metokensSubgraph, "listSubscribedMeTokens").mockResolvedValue([
       mockMeToken,
@@ -164,7 +259,14 @@ describe("runAgent1Tick", () => {
     vi.restoreAllMocks();
     delete process.env.TRADING_ENABLED;
     delete process.env.KILL_SWITCH;
+    delete process.env.AGENT1_BROADCAST_ENABLED;
+    delete process.env.AGENT1_ROUTER_CONFIRMED;
+    delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
     delete process.env.AGENT1_DENIED_METOKENS;
+    delete process.env.AGENT1_TICK_MODEL_ENABLED;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.ALCHEMY_API_KEY;
+    delete process.env.AGENT1_WALLET_ADDRESS;
   });
 
   it("skips when trading is disabled", async () => {
@@ -181,7 +283,7 @@ describe("runAgent1Tick", () => {
     expect(result.wouldExecute).toBe(false);
     expect(result.broadcast).toBe(false);
     expect(result.dryRun).toBeNull();
-    expect(result.slice).toBe("E-prep");
+    expect(result.slice).toBe("E-live");
   });
 
   it("skips when kill switch is active", async () => {
@@ -220,91 +322,10 @@ describe("runAgent1Tick", () => {
     expect(result.candidatesConsidered.some((candidate) => candidate.selected)).toBe(true);
   });
 
-  it("never broadcasts even when dry-run prepare succeeds", async () => {
+  it("does not broadcast when prepare succeeds but gates are closed", async () => {
     process.env.TRADING_ENABLED = "true";
 
-    vi.spyOn(dryRunModule, "dryRunUsdcToMeToken").mockResolvedValue({
-      ok: true,
-      agent: "agent1",
-      slice: "E-prep",
-      wouldExecute: false,
-      broadcast: false,
-      meToken: {
-        address: mockMeToken.meToken,
-        symbol: mockMeToken.symbol,
-        name: mockMeToken.name,
-        hubId: mockMeToken.hubId,
-      },
-      quote: {
-        mode: "mock",
-        inputAsset: BASE_USDC_ADDRESS,
-        outputToken: mockMeToken.meToken,
-        usdcIn: "25",
-        usdcInRaw: "25000000",
-        meTokensOut: "8.75",
-        meTokensOutRaw: "8750000000000000000",
-        slippageBpsEstimate: null,
-        venue: {
-          type: "metokens_diamond_mint_quote",
-          diamondAddress: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
-          routerConfirmed: false,
-          abiLabel: "foundry-facet-v1-provisional",
-          quoteMode: "mock",
-          mintPath: "provisional_approve_diamond",
-          note: "test",
-          addresses: {
-            diamond: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
-            diamondConfigured: false,
-            hub2UsdcVault: STAGING_HUB2_USDC_VAULT,
-            hubVaultConfigured: false,
-            stagingDiamondDefault: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
-            stagingHubVaultDefault: STAGING_HUB2_USDC_VAULT,
-          },
-        },
-        warnings: [],
-      },
-      plannedCalls: [],
-      signer: {
-        slice: "C",
-        configured: true,
-        mode: "api_key",
-        address: "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10",
-        alchemyApiKeyPresent: true,
-        gasPolicyIdPresent: false,
-        canPrepareCalls: true,
-        canBroadcast: false,
-        note: "test",
-      },
-      alchemyPrepare: { attempted: true, ok: true, prepared: { mock: true } },
-      trading: { executed: false, reason: "slice_e_prep_dry_run_only" },
-      policy: {
-        gates: { tradingEnabled: true, killSwitch: false },
-        limits: {
-          maxTradeUsdc: 25,
-          dailyVolumeUsdc: 100,
-          slippageBps: 250,
-          cooldownSeconds: 1800,
-        },
-        trading: { mode: "dry_run", reason: "trading_enabled_but_slice_e_prep_dry_run_only" },
-      },
-      venue: {
-        type: "metokens_diamond_mint",
-        routerConfirmed: false,
-        abiLabel: "foundry-facet-v1-provisional",
-        quoteMode: "mock",
-        mintPath: "provisional_approve_diamond",
-        note: "test",
-        addresses: {
-          diamond: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
-          diamondConfigured: false,
-          hub2UsdcVault: STAGING_HUB2_USDC_VAULT,
-          hubVaultConfigured: false,
-          stagingDiamondDefault: "0xba5502db2aC2cBff189965e991C07109B14eB3f5",
-          stagingHubVaultDefault: STAGING_HUB2_USDC_VAULT,
-        },
-      },
-      warnings: ["slice_e_prep_dry_run_only"],
-    });
+    vi.spyOn(dryRunModule, "dryRunUsdcToMeToken").mockResolvedValue(makeDryRunSuccess());
 
     const result = await runAgent1Tick();
     expect(result.ok).toBe(true);
@@ -314,9 +335,112 @@ describe("runAgent1Tick", () => {
 
     expect(result.broadcast).toBe(false);
     expect(result.wouldExecute).toBe(false);
+    expect(result.decision.action).toBe("planned");
     expect(result.dryRun?.broadcast).toBe(false);
     expect(result.dryRun?.wouldExecute).toBe(false);
     expect(result.dryRun?.signer.canBroadcast).toBe(false);
+  });
+
+  it("broadcasts when every live gate is open and prepared calls are signed", async () => {
+    process.env.TRADING_ENABLED = "true";
+    process.env.KILL_SWITCH = "false";
+    process.env.AGENT1_BROADCAST_ENABLED = "true";
+    process.env.AGENT1_ROUTER_CONFIRMED = "true";
+    process.env.AGENT1_METOKENS_DIAMOND_ADDRESS = STAGING_METOKENS_DIAMOND_ADDRESS;
+    process.env.ALCHEMY_API_KEY = "test-key";
+    process.env.AGENT1_WALLET_ADDRESS = "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10";
+
+    const signedPrepared = {
+      type: "user-operation-v070",
+      data: { sender: "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10" },
+      signature: { type: "secp256k1", data: "0xsig" },
+    };
+
+    vi.spyOn(dryRunModule, "dryRunUsdcToMeToken").mockResolvedValue(
+      makeDryRunSuccess({
+        alchemyPrepare: { attempted: true, ok: true, prepared: signedPrepared },
+        signer: {
+          slice: "C",
+          configured: true,
+          mode: "api_key",
+          address: "0x8f8c5df780cab54adfc5a8fdd8406d91bac5bf10",
+          alchemyApiKeyPresent: true,
+          gasPolicyIdPresent: false,
+          canPrepareCalls: true,
+          canBroadcast: true,
+          note: "test",
+        },
+        venue: {
+          type: "metokens_diamond_mint",
+          routerConfirmed: true,
+          abiLabel: "foundry-facet-v1-confirmed",
+          quoteMode: "mock",
+          mintPath: "confirmed_approve_hub_vault",
+          note: "test",
+          addresses: {
+            diamond: STAGING_METOKENS_DIAMOND_ADDRESS,
+            diamondConfigured: true,
+            hub2UsdcVault: STAGING_HUB2_USDC_VAULT,
+            hubVaultConfigured: true,
+            stagingDiamondDefault: STAGING_METOKENS_DIAMOND_ADDRESS,
+            stagingHubVaultDefault: STAGING_HUB2_USDC_VAULT,
+          },
+        },
+        policy: {
+          gates: { tradingEnabled: true, killSwitch: false, broadcastEnabled: true },
+          limits: {
+            maxTradeUsdc: 25,
+            dailyVolumeUsdc: 100,
+            slippageBps: 250,
+            cooldownSeconds: 1800,
+          },
+          trading: { mode: "live", reason: "live_broadcast_enabled" },
+        },
+      }),
+    );
+
+    vi.spyOn(signerModule, "sendPreparedAlchemyCalls").mockResolvedValue({
+      ok: true,
+      result: { id: "0xbroadcast" },
+    });
+
+    const result = await runAgent1Tick();
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.decision.action).toBe("executed");
+    expect(result.broadcast).toBe(true);
+    expect(result.wouldExecute).toBe(true);
+    expect(result.trading.executed).toBe(true);
+    expect(result.broadcastAttempt?.ok).toBe(true);
+    expect(signerModule.sendPreparedAlchemyCalls).toHaveBeenCalledWith(signedPrepared);
+  });
+
+  it("uses model-assisted selection when Gemini path succeeds", async () => {
+    process.env.TRADING_ENABLED = "true";
+    process.env.AGENT1_TICK_MODEL_ENABLED = "true";
+    process.env.GEMINI_API_KEY = "gemini-test";
+
+    vi.spyOn(tickModel, "selectCandidateWithModel").mockResolvedValue({
+      ok: true,
+      meToken: mockMeToken2.meToken.toLowerCase(),
+      provider: "gemini",
+      model: "gemini-2.0-flash",
+    });
+
+    const result = await runAgent1Tick();
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+
+    expect(result.decision.modelUsed).toBe(true);
+    expect(result.decision.candidateStrategy).toBe("model_assisted");
+    expect(result.candidatesConsidered.find((c) => c.selected)?.meToken.toLowerCase()).toBe(
+      mockMeToken2.meToken.toLowerCase(),
+    );
   });
 
   it("skips planning when tick store fails (fail-closed)", async () => {
@@ -427,7 +551,7 @@ describe("tick route happy path", () => {
     expect(response.status).toBe(200);
 
     const body = await response.json();
-    expect(body.slice).toBe("E-prep");
+    expect(body.slice).toBe("E-live");
     expect(body.wouldExecute).toBe(false);
     expect(body.broadcast).toBe(false);
     expect(body.decision.action).toBe("planned");

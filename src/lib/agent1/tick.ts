@@ -6,9 +6,14 @@ import {
 } from "@/lib/agent1/metokens-subgraph";
 import {
   executeTradingNoOp,
+  getTradingBroadcastEligibility,
   getAgent1Policy,
   type Agent1Policy,
 } from "@/lib/agent1/policy";
+import {
+  getAgent1SignerStatus,
+  sendPreparedAlchemyCalls,
+} from "@/lib/agent1/signer";
 import {
   checkCooldown,
   checkDailyVolumeCapacity,
@@ -17,7 +22,13 @@ import {
   type Agent1TickStateSnapshot,
   type TickStateResult,
 } from "@/lib/agent1/tick-state";
+import {
+  hasTickModelCredentials,
+  isTickModelEnabled,
+  selectCandidateWithModel,
+} from "@/lib/agent1/tick-model";
 import { validateMeTokenUniverse } from "@/lib/agent1/universe";
+import { getAgent1VenueStatus } from "@/lib/agent1/venue";
 import { logger } from "@/lib/logger";
 
 export const DEFAULT_CANDIDATE_STRATEGY = "newest_subscribe_first" as const;
@@ -35,27 +46,36 @@ export interface Agent1TickCandidate {
   rejectReason?: string;
 }
 
+export interface Agent1TickBroadcast {
+  attempted: boolean;
+  ok: boolean;
+  error?: string;
+  message?: string;
+  result?: unknown;
+}
+
 export interface Agent1TickSuccess {
   ok: true;
   agent: "agent1";
-  slice: "E-prep";
-  wouldExecute: false;
-  broadcast: false;
+  slice: "E-live";
+  wouldExecute: boolean;
+  broadcast: boolean;
   timestamp: string;
   policy: Pick<Agent1Policy, "gates" | "limits" | "trading">;
   tickState: Agent1TickStateSnapshot | null;
   tickStoreError: string | null;
   decision: {
-    action: "skipped" | "planned";
+    action: "skipped" | "planned" | "executed";
     reason: string;
     candidateStrategy: Agent1CandidateStrategy;
-    modelUsed: false;
+    modelUsed: boolean;
     tradeUsdcAmount: string | null;
   };
   candidatesConsidered: Agent1TickCandidate[];
   dryRun: Agent1DryRunSuccess | null;
+  broadcastAttempt: Agent1TickBroadcast | null;
   trading: {
-    executed: false;
+    executed: boolean;
     reason: string;
   };
   warnings: string[];
@@ -64,7 +84,7 @@ export interface Agent1TickSuccess {
 export interface Agent1TickFailure {
   ok: false;
   agent: "agent1";
-  slice: "E-prep";
+  slice: "E-live";
   wouldExecute: false;
   broadcast: false;
   error: string;
@@ -85,22 +105,9 @@ function parsePositiveInt(value: string | undefined, defaultValue: number): numb
   return parsed;
 }
 
-function isModelPathEnabled(): boolean {
-  const flag = process.env.AGENT1_TICK_MODEL_ENABLED?.trim().toLowerCase();
-  return ["1", "true", "yes", "on"].includes(flag ?? "");
-}
-
-function hasModelCredentials(): boolean {
-  return Boolean(
-    process.env.OLLAMA_BASE_URL?.trim() ||
-      process.env.AI_GATEWAY_API_KEY?.trim() ||
-      process.env.VERCEL_AI_GATEWAY_API_KEY?.trim(),
-  );
-}
-
-function resolveCandidateStrategy(): Agent1CandidateStrategy {
-  if (isModelPathEnabled() && hasModelCredentials()) {
-    return DEFAULT_CANDIDATE_STRATEGY;
+function resolveCandidateStrategy(modelUsed: boolean): Agent1CandidateStrategy {
+  if (modelUsed) {
+    return "model_assisted";
   }
   return DEFAULT_CANDIDATE_STRATEGY;
 }
@@ -129,11 +136,20 @@ async function loadCandidateUniverse(limit: number): Promise<SubscribedMeToken[]
 
 async function evaluateCandidates(
   tokens: SubscribedMeToken[],
+  preferredMeToken?: string | null,
 ): Promise<{ candidates: Agent1TickCandidate[]; selected: SubscribedMeToken | null }> {
   const candidates: Agent1TickCandidate[] = [];
   let selected: SubscribedMeToken | null = null;
+  const preferred = preferredMeToken?.toLowerCase() ?? null;
 
-  for (const token of tokens) {
+  const ordered = preferred
+    ? [
+        ...tokens.filter((token) => token.meToken.toLowerCase() === preferred),
+        ...tokens.filter((token) => token.meToken.toLowerCase() !== preferred),
+      ]
+    : tokens;
+
+  for (const token of ordered) {
     if (isDeniedMeToken(token.meToken)) {
       candidates.push({
         meToken: token.meToken,
@@ -185,12 +201,21 @@ async function evaluateCandidates(
 
 export async function runAgent1Tick(): Promise<Agent1TickResult> {
   const policy = getAgent1Policy();
-  const tradingNoOp = executeTradingNoOp("slice_e_prep_tick");
-  const warnings: string[] = ["slice_e_prep_tick_only", "no_broadcast"];
-  const candidateStrategy = resolveCandidateStrategy();
+  const tradingNoOp = executeTradingNoOp("slice_e_live_tick");
+  const broadcastEligibility = getTradingBroadcastEligibility();
+  const venue = getAgent1VenueStatus();
+  const warnings: string[] = [];
   const candidateLimit = parsePositiveInt(process.env.AGENT1_TICK_CANDIDATE_LIMIT, 10);
 
-  if (isModelPathEnabled() && !hasModelCredentials()) {
+  if (!broadcastEligibility.allowed) {
+    warnings.push("no_broadcast");
+    warnings.push("slice_e_live_plan_or_gated");
+  } else {
+    warnings.push("broadcast_gates_open");
+  }
+
+  let modelUsed = false;
+  if (isTickModelEnabled() && !hasTickModelCredentials()) {
     warnings.push("model_enabled_but_credentials_missing");
   }
 
@@ -198,12 +223,13 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
   const tickState = tickStateResult.ok ? tickStateResult.data : null;
   const tickStoreError = tickStateResult.ok ? null : tickStateResult.message;
   const timestamp = new Date().toISOString();
+  let candidateStrategy = resolveCandidateStrategy(false);
 
   const baseSuccess = {
     agent: "agent1" as const,
-    slice: "E-prep" as const,
-    wouldExecute: false as const,
-    broadcast: false as const,
+    slice: "E-live" as const,
+    wouldExecute: false,
+    broadcast: false,
     timestamp,
     policy: {
       gates: policy.gates,
@@ -212,8 +238,9 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     },
     tickState,
     tickStoreError,
+    broadcastAttempt: null as Agent1TickBroadcast | null,
     trading: {
-      executed: false as const,
+      executed: false,
       reason: tradingNoOp.reason,
     },
     warnings,
@@ -349,7 +376,7 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     return {
       ok: false,
       agent: "agent1",
-      slice: "E-prep",
+      slice: "E-live",
       wouldExecute: false,
       broadcast: false,
       error: "subgraph_unavailable",
@@ -358,7 +385,20 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     };
   }
 
-  const { candidates, selected } = await evaluateCandidates(universe);
+  let preferredMeToken: string | null = null;
+  if (isTickModelEnabled() && hasTickModelCredentials() && universe.length > 0) {
+    const modelSelection = await selectCandidateWithModel(universe);
+    if (modelSelection.ok) {
+      preferredMeToken = modelSelection.meToken;
+      modelUsed = true;
+      candidateStrategy = resolveCandidateStrategy(true);
+    } else {
+      warnings.push(`model_selection_failed:${modelSelection.error}`);
+      candidateStrategy = DEFAULT_CANDIDATE_STRATEGY;
+    }
+  }
+
+  const { candidates, selected } = await evaluateCandidates(universe, preferredMeToken);
 
   if (!selected) {
     logger.info("agent1_tick_skipped", { reason: "no_eligible_candidates" });
@@ -370,7 +410,7 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
         action: "skipped",
         reason: "no_eligible_candidates",
         candidateStrategy,
-        modelUsed: false,
+        modelUsed,
         tradeUsdcAmount: null,
       },
       candidatesConsidered: candidates,
@@ -397,7 +437,7 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
         action: "skipped",
         reason: dryRun.error,
         candidateStrategy,
-        modelUsed: false,
+        modelUsed,
         tradeUsdcAmount,
       },
       candidatesConsidered: candidates,
@@ -421,7 +461,7 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
         action: "skipped",
         reason: "slippage_exceeded",
         candidateStrategy,
-        modelUsed: false,
+        modelUsed,
         tradeUsdcAmount,
       },
       candidatesConsidered: candidates,
@@ -448,7 +488,7 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
         action: "skipped",
         reason: "tick_store_error",
         candidateStrategy,
-        modelUsed: false,
+        modelUsed,
         tradeUsdcAmount,
       },
       candidatesConsidered: candidates,
@@ -457,26 +497,122 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     };
   }
 
-  logger.info("agent1_tick_planned", {
+  const signer = getAgent1SignerStatus();
+  const canAttemptBroadcast =
+    broadcastEligibility.allowed &&
+    venue.gates.broadcastAllowed &&
+    signer.canBroadcast &&
+    dryRun.alchemyPrepare.attempted &&
+    dryRun.alchemyPrepare.ok;
+
+  if (!canAttemptBroadcast) {
+    logger.info("agent1_tick_planned", {
+      meToken: selected.meToken.toLowerCase(),
+      usdcAmount: tradeUsdcAmount,
+      candidateStrategy,
+      modelUsed,
+      prepareAttempted: dryRun.alchemyPrepare.attempted,
+      broadcastAllowed: venue.gates.broadcastAllowed,
+    });
+
+    return {
+      ok: true,
+      ...baseSuccess,
+      tickState: recordResult.data,
+      decision: {
+        action: "planned",
+        reason: broadcastEligibility.allowed
+          ? "planned_prepare_incomplete_or_unsigned"
+          : "dry_run_planned",
+        candidateStrategy,
+        modelUsed,
+        tradeUsdcAmount,
+      },
+      candidatesConsidered: candidates,
+      dryRun,
+      warnings,
+    };
+  }
+
+  const prepared =
+    dryRun.alchemyPrepare.attempted && dryRun.alchemyPrepare.ok
+      ? dryRun.alchemyPrepare.prepared
+      : null;
+
+  const sendResult = prepared
+    ? await sendPreparedAlchemyCalls(prepared)
+    : {
+        ok: false as const,
+        error: "prepare_missing",
+        message: "No prepared calls available for send",
+      };
+
+  const broadcastAttempt: Agent1TickBroadcast = sendResult.ok
+    ? { attempted: true, ok: true, result: sendResult.result }
+    : {
+        attempted: true,
+        ok: false,
+        error: sendResult.error,
+        message: sendResult.message,
+      };
+
+  if (!sendResult.ok) {
+    warnings.push(`broadcast_failed:${sendResult.error}`);
+    logger.info("agent1_tick_broadcast_failed", {
+      meToken: selected.meToken.toLowerCase(),
+      error: sendResult.error,
+      message: sendResult.message,
+    });
+
+    return {
+      ok: true,
+      ...baseSuccess,
+      tickState: recordResult.data,
+      decision: {
+        action: "planned",
+        reason: "broadcast_failed",
+        candidateStrategy,
+        modelUsed,
+        tradeUsdcAmount,
+      },
+      candidatesConsidered: candidates,
+      dryRun,
+      broadcastAttempt,
+      trading: {
+        executed: false,
+        reason: sendResult.error,
+      },
+      warnings,
+    };
+  }
+
+  logger.info("agent1_tick_executed", {
     meToken: selected.meToken.toLowerCase(),
     usdcAmount: tradeUsdcAmount,
     candidateStrategy,
-    prepareAttempted: dryRun.alchemyPrepare.attempted,
+    modelUsed,
   });
 
   return {
     ok: true,
     ...baseSuccess,
+    wouldExecute: true,
+    broadcast: true,
     tickState: recordResult.data,
     decision: {
-      action: "planned",
-      reason: "dry_run_planned",
+      action: "executed",
+      reason: "broadcast_sent",
       candidateStrategy,
-      modelUsed: false,
+      modelUsed,
       tradeUsdcAmount,
     },
     candidatesConsidered: candidates,
     dryRun,
-    warnings,
+    broadcastAttempt,
+    trading: {
+      executed: true,
+      reason: "broadcast_sent",
+    },
+    warnings: warnings.filter((warning) => warning !== "no_broadcast"),
   };
 }
