@@ -14,6 +14,8 @@ import {
   checkDailyVolumeCapacity,
   getTickStateSnapshot,
   recordPlannedDryRun,
+  type Agent1TickStateSnapshot,
+  type TickStateResult,
 } from "@/lib/agent1/tick-state";
 import { validateMeTokenUniverse } from "@/lib/agent1/universe";
 import { logger } from "@/lib/logger";
@@ -36,12 +38,13 @@ export interface Agent1TickCandidate {
 export interface Agent1TickSuccess {
   ok: true;
   agent: "agent1";
-  slice: "D";
+  slice: "E-prep";
   wouldExecute: false;
   broadcast: false;
   timestamp: string;
   policy: Pick<Agent1Policy, "gates" | "limits" | "trading">;
-  tickState: ReturnType<typeof getTickStateSnapshot>;
+  tickState: Agent1TickStateSnapshot | null;
+  tickStoreError: string | null;
   decision: {
     action: "skipped" | "planned";
     reason: string;
@@ -61,7 +64,7 @@ export interface Agent1TickSuccess {
 export interface Agent1TickFailure {
   ok: false;
   agent: "agent1";
-  slice: "D";
+  slice: "E-prep";
   wouldExecute: false;
   broadcast: false;
   error: string;
@@ -97,20 +100,27 @@ function hasModelCredentials(): boolean {
 
 function resolveCandidateStrategy(): Agent1CandidateStrategy {
   if (isModelPathEnabled() && hasModelCredentials()) {
-    // Slice D stub: model-assisted path falls back to deterministic selection until keys wired in Slice E.
     return DEFAULT_CANDIDATE_STRATEGY;
   }
   return DEFAULT_CANDIDATE_STRATEGY;
 }
 
-function resolveTradeUsdcAmount(policy: Agent1Policy): string {
+async function resolveTradeUsdcAmount(policy: Agent1Policy): Promise<
+  TickStateResult<{ amount: string; amountNumber: number }>
+> {
   const maxTrade = policy.limits.maxTradeUsdc;
-  const volumeCheck = checkDailyVolumeCapacity(maxTrade, policy.limits.dailyVolumeUsdc);
+  const volumeCheck = await checkDailyVolumeCapacity(maxTrade, policy.limits.dailyVolumeUsdc);
   if (!volumeCheck.ok) {
-    return "0";
+    return volumeCheck;
   }
-  const amount = Math.min(maxTrade, volumeCheck.remainingUsdc);
-  return String(amount);
+
+  const inner = volumeCheck.data;
+  if (!inner.ok) {
+    return { ok: true, data: { amount: "0", amountNumber: 0 } };
+  }
+
+  const amount = Math.min(maxTrade, inner.remainingUsdc);
+  return { ok: true, data: { amount: String(amount), amountNumber: amount } };
 }
 
 async function loadCandidateUniverse(limit: number): Promise<SubscribedMeToken[]> {
@@ -175,8 +185,8 @@ async function evaluateCandidates(
 
 export async function runAgent1Tick(): Promise<Agent1TickResult> {
   const policy = getAgent1Policy();
-  const tradingNoOp = executeTradingNoOp("slice_d_tick");
-  const warnings: string[] = ["slice_d_tick_only", "no_broadcast"];
+  const tradingNoOp = executeTradingNoOp("slice_e_prep_tick");
+  const warnings: string[] = ["slice_e_prep_tick_only", "no_broadcast"];
   const candidateStrategy = resolveCandidateStrategy();
   const candidateLimit = parsePositiveInt(process.env.AGENT1_TICK_CANDIDATE_LIMIT, 10);
 
@@ -184,12 +194,14 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     warnings.push("model_enabled_but_credentials_missing");
   }
 
-  const tickState = getTickStateSnapshot();
+  const tickStateResult = await getTickStateSnapshot();
+  const tickState = tickStateResult.ok ? tickStateResult.data : null;
+  const tickStoreError = tickStateResult.ok ? null : tickStateResult.message;
   const timestamp = new Date().toISOString();
 
   const baseSuccess = {
     agent: "agent1" as const,
-    slice: "D" as const,
+    slice: "E-prep" as const,
     wouldExecute: false as const,
     broadcast: false as const,
     timestamp,
@@ -199,12 +211,32 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
       trading: policy.trading,
     },
     tickState,
+    tickStoreError,
     trading: {
       executed: false as const,
       reason: tradingNoOp.reason,
     },
     warnings,
   };
+
+  if (!tickStateResult.ok) {
+    logger.info("agent1_tick_skipped", { reason: "tick_store_error", message: tickStoreError });
+
+    return {
+      ok: true,
+      ...baseSuccess,
+      decision: {
+        action: "skipped",
+        reason: "tick_store_error",
+        candidateStrategy,
+        modelUsed: false,
+        tradeUsdcAmount: null,
+      },
+      candidatesConsidered: [],
+      dryRun: null,
+      warnings: [...warnings, "tick_store_error"],
+    };
+  }
 
   if (!policy.gates.tradingEnabled || policy.gates.killSwitch) {
     const reason = policy.gates.killSwitch ? "kill_switch_active" : "trading_disabled";
@@ -225,11 +257,11 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     };
   }
 
-  const cooldownCheck = checkCooldown(policy.limits.cooldownSeconds);
+  const cooldownCheck = await checkCooldown(policy.limits.cooldownSeconds);
   if (!cooldownCheck.ok) {
     logger.info("agent1_tick_skipped", {
-      reason: cooldownCheck.reason,
-      remainingSeconds: cooldownCheck.remainingSeconds,
+      reason: "tick_store_error",
+      message: cooldownCheck.message,
     });
 
     return {
@@ -237,7 +269,30 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
       ...baseSuccess,
       decision: {
         action: "skipped",
-        reason: cooldownCheck.reason,
+        reason: "tick_store_error",
+        candidateStrategy,
+        modelUsed: false,
+        tradeUsdcAmount: null,
+      },
+      candidatesConsidered: [],
+      dryRun: null,
+      warnings: [...warnings, "tick_store_error"],
+    };
+  }
+
+  const cooldown = cooldownCheck.data;
+  if (!cooldown.ok) {
+    logger.info("agent1_tick_skipped", {
+      reason: cooldown.reason,
+      remainingSeconds: cooldown.remainingSeconds,
+    });
+
+    return {
+      ok: true,
+      ...baseSuccess,
+      decision: {
+        action: "skipped",
+        reason: cooldown.reason,
         candidateStrategy,
         modelUsed: false,
         tradeUsdcAmount: null,
@@ -248,8 +303,25 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     };
   }
 
-  const tradeUsdcAmount = resolveTradeUsdcAmount(policy);
-  const tradeAmountNumber = Number(tradeUsdcAmount);
+  const tradeAmountResult = await resolveTradeUsdcAmount(policy);
+  if (!tradeAmountResult.ok) {
+    return {
+      ok: true,
+      ...baseSuccess,
+      decision: {
+        action: "skipped",
+        reason: "tick_store_error",
+        candidateStrategy,
+        modelUsed: false,
+        tradeUsdcAmount: null,
+      },
+      candidatesConsidered: [],
+      dryRun: null,
+      warnings: [...warnings, "tick_store_error"],
+    };
+  }
+
+  const { amount: tradeUsdcAmount, amountNumber: tradeAmountNumber } = tradeAmountResult.data;
 
   if (!Number.isFinite(tradeAmountNumber) || tradeAmountNumber <= 0) {
     logger.info("agent1_tick_skipped", { reason: "daily_volume_exceeded" });
@@ -277,7 +349,7 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     return {
       ok: false,
       agent: "agent1",
-      slice: "D",
+      slice: "E-prep",
       wouldExecute: false,
       broadcast: false,
       error: "subgraph_unavailable",
@@ -362,7 +434,28 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
     warnings.push("slippage_not_estimated");
   }
 
-  recordPlannedDryRun(tradeAmountNumber);
+  const recordResult = await recordPlannedDryRun(tradeAmountNumber);
+  if (!recordResult.ok) {
+    logger.info("agent1_tick_skipped", {
+      reason: "tick_store_error",
+      message: recordResult.message,
+    });
+
+    return {
+      ok: true,
+      ...baseSuccess,
+      decision: {
+        action: "skipped",
+        reason: "tick_store_error",
+        candidateStrategy,
+        modelUsed: false,
+        tradeUsdcAmount,
+      },
+      candidatesConsidered: candidates,
+      dryRun: null,
+      warnings: [...warnings, "tick_store_error"],
+    };
+  }
 
   logger.info("agent1_tick_planned", {
     meToken: selected.meToken.toLowerCase(),
@@ -374,7 +467,7 @@ export async function runAgent1Tick(): Promise<Agent1TickResult> {
   return {
     ok: true,
     ...baseSuccess,
-    tickState: getTickStateSnapshot(),
+    tickState: recordResult.data,
     decision: {
       action: "planned",
       reason: "dry_run_planned",

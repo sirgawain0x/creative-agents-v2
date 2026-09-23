@@ -1,4 +1,6 @@
 import { parseDeniedMeTokens } from "@/lib/agent1/deny-list";
+import { getTickStoreMeta } from "@/lib/agent1/tick-state";
+import { getAgent1VenueStatus } from "@/lib/agent1/venue";
 import { logger } from "@/lib/logger";
 import {
   DEFAULT_STUDIO_SUBGRAPH_URL,
@@ -20,7 +22,7 @@ export interface Agent1PolicyGates {
 
 export interface Agent1Policy {
   agent: "agent1";
-  version: "slice-d";
+  version: "slice-e-prep";
   subgraph: {
     providerMode: "studio" | "goldsky" | "dual";
     studioUrl: string;
@@ -29,16 +31,23 @@ export interface Agent1Policy {
   limits: Agent1PolicyLimits;
   gates: Agent1PolicyGates;
   trading: {
-    /** disabled = gates closed; dry_run = gates open but Slice D never broadcasts */
+    /** disabled = gates closed; dry_run = gates open but never broadcasts (Slice E prep) */
     mode: "disabled" | "dry_run";
     reason: string;
   };
   tick: {
-    /** Slice D cron tick endpoint is deployed; still dry-run only */
     enabled: true;
     endpoint: "/api/agent1/tick";
     cronSchedule: "*/30 * * * *";
     auth: "bearer_cron_secret";
+    store: ReturnType<typeof getTickStoreMeta>;
+  };
+  venue: Pick<
+    ReturnType<typeof getAgent1VenueStatus>["venue"],
+    "routerConfirmed" | "abiLabel" | "quoteMode" | "mintPath"
+  > & {
+    diamondAddress: string;
+    hub2UsdcVault: string;
   };
 }
 
@@ -80,6 +89,7 @@ export function getAgent1Policy(): Agent1Policy {
   const tradingEnabled = parseBoolean(process.env.TRADING_ENABLED, false);
   const killSwitch = parseBoolean(process.env.KILL_SWITCH, false);
   const tradingBlocked = !tradingEnabled || killSwitch;
+  const venueStatus = getAgent1VenueStatus();
 
   const limits: Agent1PolicyLimits = {
     maxTradeUsdc: parsePositiveNumber(process.env.MAX_TRADE_USDC, 25, "MAX_TRADE_USDC"),
@@ -103,12 +113,12 @@ export function getAgent1Policy(): Agent1Policy {
   if (killSwitch) {
     reason = "kill_switch_active";
   } else if (tradingEnabled) {
-    reason = "trading_enabled_but_slice_d_dry_run_only";
+    reason = "trading_enabled_but_slice_e_prep_dry_run_only";
   }
 
   return {
     agent: "agent1",
-    version: "slice-d",
+    version: "slice-e-prep",
     subgraph: {
       providerMode: getSubgraphProviderMode(),
       studioUrl,
@@ -128,6 +138,15 @@ export function getAgent1Policy(): Agent1Policy {
       endpoint: "/api/agent1/tick",
       cronSchedule: "*/30 * * * *",
       auth: "bearer_cron_secret",
+      store: getTickStoreMeta(),
+    },
+    venue: {
+      routerConfirmed: venueStatus.venue.routerConfirmed,
+      abiLabel: venueStatus.venue.abiLabel,
+      quoteMode: venueStatus.venue.quoteMode,
+      mintPath: venueStatus.venue.mintPath,
+      diamondAddress: venueStatus.venue.addresses.diamond,
+      hub2UsdcVault: venueStatus.venue.addresses.hub2UsdcVault,
     },
   };
 }
@@ -146,7 +165,7 @@ export function executeTradingNoOp(intent?: string): TradingNoOpResult {
     ? policy.gates.killSwitch
       ? "kill_switch_active"
       : "trading_disabled"
-    : "slice_d_dry_run_only";
+    : "slice_e_prep_dry_run_only";
 
   logger.info("trading_noop", {
     intent,

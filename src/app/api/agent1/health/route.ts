@@ -4,6 +4,7 @@ import { getAgent1Policy } from "@/lib/agent1/policy";
 import { listSubscribedMeTokens } from "@/lib/agent1/metokens-subgraph";
 import { getAgent1SignerStatus } from "@/lib/agent1/signer";
 import { getTickStateSnapshot } from "@/lib/agent1/tick-state";
+import { getAgent1VenueStatus } from "@/lib/agent1/venue";
 import { getAgent1WalletBalances } from "@/lib/agent1/wallet-balances";
 import { getCronSecret } from "@/lib/cron";
 
@@ -12,7 +13,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const policy = getAgent1Policy();
   const signer = getAgent1SignerStatus();
-  const tickState = getTickStateSnapshot();
+  const venue = getAgent1VenueStatus();
+  const tickStateResult = await getTickStateSnapshot();
 
   let meTokenCount: number | null = null;
   let subgraphError: string | null = null;
@@ -29,12 +31,14 @@ export async function GET() {
   return NextResponse.json({
     status: subgraphError ? "degraded" : "ok",
     agent: "agent1",
-    slice: "D",
+    slice: "E-prep",
     trading: policy.trading,
+    venue: venue.venue,
     tick: {
       ...policy.tick,
       cronSecretConfigured: Boolean(getCronSecret()),
-      state: tickState,
+      state: tickStateResult.ok ? tickStateResult.data : null,
+      storeError: tickStateResult.ok ? null : tickStateResult.message,
     },
     signer: {
       configured: signer.configured,

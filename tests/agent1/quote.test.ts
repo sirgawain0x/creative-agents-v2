@@ -20,12 +20,14 @@ describe("quoteUsdcToMeToken", () => {
   beforeEach(() => {
     delete process.env.AGENT1_QUOTE_MODE;
     delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
+    delete process.env.AGENT1_ROUTER_CONFIRMED;
     delete process.env.BASE_RPC_URL;
   });
 
   afterEach(() => {
     delete process.env.AGENT1_QUOTE_MODE;
     delete process.env.AGENT1_METOKENS_DIAMOND_ADDRESS;
+    delete process.env.AGENT1_ROUTER_CONFIRMED;
     delete process.env.BASE_RPC_URL;
   });
 
@@ -50,5 +52,20 @@ describe("quoteUsdcToMeToken", () => {
         usdcAmount: "10",
       }),
     ).rejects.toThrow(/AGENT1_METOKENS_DIAMOND_ADDRESS/);
+  });
+
+  it("reports router confirmed only when G2 opts in", async () => {
+    process.env.AGENT1_QUOTE_MODE = "mock";
+    process.env.AGENT1_ROUTER_CONFIRMED = "true";
+    process.env.AGENT1_METOKENS_DIAMOND_ADDRESS =
+      "0xba5502db2aC2cBff189965e991C07109B14eB3f5";
+
+    const quote = await quoteUsdcToMeToken({
+      meToken: mockMeToken,
+      usdcAmount: "10",
+    });
+
+    expect(quote.venue.routerConfirmed).toBe(true);
+    expect(quote.venue.abiLabel).toBe("foundry-facet-v1-confirmed");
   });
 });

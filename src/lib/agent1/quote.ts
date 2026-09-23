@@ -1,31 +1,16 @@
 import { createPublicClient, formatUnits, http, parseUnits, type Address } from "viem";
 import { base } from "viem/chains";
 
-import {
-  BASE_USDC_ADDRESS,
-  METOKEN_DECIMALS,
-  STAGING_METOKENS_DIAMOND_ADDRESS,
-  USDC_DECIMALS,
-} from "@/lib/agent1/constants";
+import { BASE_USDC_ADDRESS, METOKEN_DECIMALS, USDC_DECIMALS } from "@/lib/agent1/constants";
 import type { SubscribedMeToken } from "@/lib/agent1/metokens-subgraph";
+import {
+  buildQuoteVenueBlock,
+  foundryQuoteAbi,
+  getConfiguredDiamondAddress,
+  getQuoteModeFromEnv,
+  type Agent1QuoteVenue,
+} from "@/lib/agent1/venue";
 import { logger } from "@/lib/logger";
-
-/**
- * Minimal FoundryFacet view ABI for read-only mint quotes.
- * G2 must confirm diamond address + ABI parity with CreativeTV market UI.
- */
-const foundryQuoteAbi = [
-  {
-    type: "function",
-    name: "calculateMeTokensMinted",
-    stateMutability: "view",
-    inputs: [
-      { name: "meToken", type: "address" },
-      { name: "assetsDeposited", type: "uint256" },
-    ],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-] as const;
 
 export type QuoteMode = "mock" | "onchain";
 
@@ -43,37 +28,8 @@ export interface Agent1QuoteResult {
   meTokensOut: string;
   meTokensOutRaw: string;
   slippageBpsEstimate: number | null;
-  venue: {
-    type: "metokens_diamond_mint_quote";
-    diamondAddress: string | null;
-    routerConfirmed: false;
-    note: string;
-  };
+  venue: Agent1QuoteVenue;
   warnings: string[];
-}
-
-function getQuoteMode(): QuoteMode {
-  const raw = process.env.AGENT1_QUOTE_MODE?.trim().toLowerCase();
-  if (raw === "onchain") {
-    return "onchain";
-  }
-  if (raw === "mock") {
-    return "mock";
-  }
-
-  if (process.env.AGENT1_METOKENS_DIAMOND_ADDRESS?.trim()) {
-    return "onchain";
-  }
-
-  return "mock";
-}
-
-function getDiamondAddress(): Address | null {
-  const configured = process.env.AGENT1_METOKENS_DIAMOND_ADDRESS?.trim();
-  if (configured) {
-    return configured as Address;
-  }
-  return null;
 }
 
 function getBaseRpcUrl(): string | undefined {
@@ -90,21 +46,6 @@ function createBaseClient() {
     chain: base,
     transport: http(rpcUrl),
   });
-}
-
-function buildVenueNote(mode: QuoteMode, diamondAddress: string | null): string {
-  if (mode === "onchain" && diamondAddress) {
-    return (
-      "Read-only quote via calculateMeTokensMinted on meTokens Diamond (staging path). " +
-      "CreativeTV router/diamond addresses and ABI are NOT G2-confirmed for production execute."
-    );
-  }
-
-  return (
-    "Staging mock quote — ratio derived from subgraph Subscribe metadata only. " +
-    "Set AGENT1_METOKENS_DIAMOND_ADDRESS + BASE_RPC_URL + AGENT1_QUOTE_MODE=onchain for diamond read quotes. " +
-    "G2 must confirm CreativeTV router/diamond before live execute (Slice E)."
-  );
 }
 
 async function quoteOnchain(
@@ -138,8 +79,8 @@ function quoteMock(usdcInRaw: bigint): bigint {
 }
 
 export async function quoteUsdcToMeToken(input: Agent1QuoteInput): Promise<Agent1QuoteResult> {
-  const mode = getQuoteMode();
-  const diamondAddress = getDiamondAddress();
+  const mode = getQuoteModeFromEnv();
+  const diamondAddress = getConfiguredDiamondAddress();
   const usdcInRaw = parseUnits(input.usdcAmount, USDC_DECIMALS);
   const warnings: string[] = [];
 
@@ -166,6 +107,11 @@ export async function quoteUsdcToMeToken(input: Agent1QuoteInput): Promise<Agent
     });
   }
 
+  const venue = buildQuoteVenueBlock(mode);
+  if (!venue.routerConfirmed) {
+    warnings.push("router_unconfirmed");
+  }
+
   return {
     mode,
     inputAsset: BASE_USDC_ADDRESS,
@@ -175,12 +121,7 @@ export async function quoteUsdcToMeToken(input: Agent1QuoteInput): Promise<Agent
     meTokensOut: formatUnits(meTokensOutRaw, METOKEN_DECIMALS),
     meTokensOutRaw: meTokensOutRaw.toString(),
     slippageBpsEstimate: null,
-    venue: {
-      type: "metokens_diamond_mint_quote",
-      diamondAddress: diamondAddress ?? STAGING_METOKENS_DIAMOND_ADDRESS,
-      routerConfirmed: false,
-      note: buildVenueNote(mode, diamondAddress),
-    },
+    venue,
     warnings,
   };
 }

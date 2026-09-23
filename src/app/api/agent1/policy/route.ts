@@ -16,5 +16,6 @@ export async function GET() {
     gates: policy.gates,
     trading: policy.trading,
     tick: policy.tick,
+    venue: policy.venue,
   });
 }
