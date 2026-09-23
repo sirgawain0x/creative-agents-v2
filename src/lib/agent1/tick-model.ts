@@ -320,12 +320,16 @@ export interface TickModelSmokeSuccess {
   ok: true;
   provider: "gemini" | "ai_gateway" | "ollama";
   model: string;
+  /** Whether the model body contained parseable {"ok":true}; connectivity still passes when false. */
+  responseOkParsed: boolean;
 }
 
 export interface TickModelSmokeFailure {
   ok: false;
   error: string;
   message: string;
+  provider?: "gemini" | "ai_gateway" | "ollama";
+  model?: string;
 }
 
 export type TickModelSmokeResult = TickModelSmokeSuccess | TickModelSmokeFailure;
@@ -379,25 +383,23 @@ async function smokeViaGemini(): Promise<TickModelSmokeResult> {
         ok: false,
         error: "gemini_request_failed",
         message: payload.error?.message ?? `Gemini HTTP ${response.status}`,
+        provider: "gemini",
+        model,
       };
     }
 
     const text =
       payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
-    if (!parseSmokeOkFromModelText(text)) {
-      return {
-        ok: false,
-        error: "gemini_invalid_smoke_response",
-        message: "Model response did not include {\"ok\":true}",
-      };
-    }
+    const responseOkParsed = parseSmokeOkFromModelText(text);
 
-    return { ok: true, provider: "gemini", model };
+    return { ok: true, provider: "gemini", model, responseOkParsed };
   } catch (error) {
     return {
       ok: false,
       error: "gemini_network_error",
       message: error instanceof Error ? error.message : "gemini_network_error",
+      provider: "gemini",
+      model,
     };
   }
 }
@@ -436,24 +438,22 @@ async function smokeViaAiGateway(): Promise<TickModelSmokeResult> {
         ok: false,
         error: "ai_gateway_request_failed",
         message: payload.error?.message ?? `AI Gateway HTTP ${response.status}`,
+        provider: "ai_gateway",
+        model,
       };
     }
 
     const text = payload.choices?.[0]?.message?.content ?? "";
-    if (!parseSmokeOkFromModelText(text)) {
-      return {
-        ok: false,
-        error: "ai_gateway_invalid_smoke_response",
-        message: 'Model response did not include {"ok":true}',
-      };
-    }
+    const responseOkParsed = parseSmokeOkFromModelText(text);
 
-    return { ok: true, provider: "ai_gateway", model };
+    return { ok: true, provider: "ai_gateway", model, responseOkParsed };
   } catch (error) {
     return {
       ok: false,
       error: "ai_gateway_network_error",
       message: error instanceof Error ? error.message : "ai_gateway_network_error",
+      provider: "ai_gateway",
+      model,
     };
   }
 }
@@ -490,23 +490,21 @@ async function smokeViaOllama(): Promise<TickModelSmokeResult> {
         ok: false,
         error: "ollama_request_failed",
         message: payload.error ?? `Ollama HTTP ${response.status}`,
+        provider: "ollama",
+        model,
       };
     }
 
-    if (!parseSmokeOkFromModelText(payload.response ?? "")) {
-      return {
-        ok: false,
-        error: "ollama_invalid_smoke_response",
-        message: 'Model response did not include {"ok":true}',
-      };
-    }
+    const responseOkParsed = parseSmokeOkFromModelText(payload.response ?? "");
 
-    return { ok: true, provider: "ollama", model };
+    return { ok: true, provider: "ollama", model, responseOkParsed };
   } catch (error) {
     return {
       ok: false,
       error: "ollama_network_error",
       message: error instanceof Error ? error.message : "ollama_network_error",
+      provider: "ollama",
+      model,
     };
   }
 }

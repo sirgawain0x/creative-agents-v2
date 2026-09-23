@@ -67,7 +67,7 @@ describe("agent1 model-smoke route", () => {
         expect(url).toBe("https://ai-gateway.vercel.sh/v1/chat/completions");
         return new Response(
           JSON.stringify({
-            choices: [{ message: { content: '{"ok":true}' } }],
+            choices: [{ message: { content: 'Sure: {"ok":true}' } }],
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         );
@@ -82,11 +82,60 @@ describe("agent1 model-smoke route", () => {
       agent: "agent1",
       provider: "ai_gateway",
       model: "google/gemini-2.5-pro",
+      responseOkParsed: true,
       tradingEnabled: false,
       wouldExecute: false,
       broadcast: false,
     });
     expect(body.note).toMatch(/never executes trades/i);
+  });
+
+  it("returns 200 when Gateway body is empty but HTTP succeeds", async () => {
+    process.env.AI_GATEWAY_API_KEY = "gateway-test-key";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          choices: [{ message: { content: "" } }],
+        }),
+      ),
+    );
+
+    const response = await GET(makeModelSmokeRequest(cronSecret));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      provider: "ai_gateway",
+      responseOkParsed: false,
+      wouldExecute: false,
+      broadcast: false,
+    });
+  });
+
+  it("includes provider and model on Gateway HTTP errors", async () => {
+    process.env.AI_GATEWAY_API_KEY = "gateway-test-key";
+    process.env.AGENT1_TICK_MODEL = "gemini-2.5-pro";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ error: { message: "rate limited" } }, { status: 429 }),
+      ),
+    );
+
+    const response = await GET(makeModelSmokeRequest(cronSecret));
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: false,
+      error: "ai_gateway_request_failed",
+      provider: "ai_gateway",
+      model: "google/gemini-2.5-pro",
+      wouldExecute: false,
+      broadcast: false,
+    });
   });
 });
 
@@ -123,6 +172,27 @@ describe("smokeTickModel", () => {
       ok: true,
       provider: "ai_gateway",
       model: "google/gemini-2.5-pro",
+      responseOkParsed: true,
+    });
+  });
+
+  it("succeeds on HTTP 200 when body is not strict JSON ok", async () => {
+    process.env.AI_GATEWAY_API_KEY = "gateway-key";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          choices: [{ message: { content: "ok" } }],
+        }),
+      ),
+    );
+
+    const result = await smokeTickModel();
+    expect(result).toMatchObject({
+      ok: true,
+      provider: "ai_gateway",
+      responseOkParsed: false,
     });
   });
 
