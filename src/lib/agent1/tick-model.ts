@@ -313,3 +313,239 @@ export async function selectCandidateWithModel(
     message: "No Gemini, AI Gateway, or Ollama credentials configured",
   };
 }
+
+const SMOKE_PROMPT = 'Reply with ONLY a JSON object: {"ok":true}. No other text.';
+
+export interface TickModelSmokeSuccess {
+  ok: true;
+  provider: "gemini" | "ai_gateway" | "ollama";
+  model: string;
+}
+
+export interface TickModelSmokeFailure {
+  ok: false;
+  error: string;
+  message: string;
+}
+
+export type TickModelSmokeResult = TickModelSmokeSuccess | TickModelSmokeFailure;
+
+function resolveAiGatewayModelName(): string {
+  const raw = getTickModelName();
+  return raw.startsWith("google/") ? raw : `google/${raw}`;
+}
+
+function parseSmokeOkFromModelText(text: string): boolean {
+  const trimmed = text.trim();
+  try {
+    const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]) as { ok?: boolean };
+      return parsed.ok === true;
+    }
+  } catch {
+    // fall through
+  }
+  return false;
+}
+
+async function smokeViaGemini(): Promise<TickModelSmokeResult> {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return { ok: false, error: "gemini_key_missing", message: "GEMINI_API_KEY unset" };
+  }
+
+  const model = getTickModelName();
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: SMOKE_PROMPT }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 32 },
+      }),
+      cache: "no-store",
+    });
+
+    const payload = (await response.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      error?: { message?: string };
+    };
+
+    if (!response.ok || payload.error) {
+      return {
+        ok: false,
+        error: "gemini_request_failed",
+        message: payload.error?.message ?? `Gemini HTTP ${response.status}`,
+      };
+    }
+
+    const text =
+      payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+    if (!parseSmokeOkFromModelText(text)) {
+      return {
+        ok: false,
+        error: "gemini_invalid_smoke_response",
+        message: "Model response did not include {\"ok\":true}",
+      };
+    }
+
+    return { ok: true, provider: "gemini", model };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "gemini_network_error",
+      message: error instanceof Error ? error.message : "gemini_network_error",
+    };
+  }
+}
+
+async function smokeViaAiGateway(): Promise<TickModelSmokeResult> {
+  const apiKey = getAiGatewayApiKey();
+  if (!apiKey) {
+    return { ok: false, error: "ai_gateway_key_missing", message: "AI_GATEWAY_API_KEY unset" };
+  }
+
+  const model = resolveAiGatewayModelName();
+
+  try {
+    const response = await fetch(AI_GATEWAY_CHAT_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        max_tokens: 32,
+        messages: [{ role: "user", content: SMOKE_PROMPT }],
+      }),
+      cache: "no-store",
+    });
+
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message?: string };
+    };
+
+    if (!response.ok || payload.error) {
+      return {
+        ok: false,
+        error: "ai_gateway_request_failed",
+        message: payload.error?.message ?? `AI Gateway HTTP ${response.status}`,
+      };
+    }
+
+    const text = payload.choices?.[0]?.message?.content ?? "";
+    if (!parseSmokeOkFromModelText(text)) {
+      return {
+        ok: false,
+        error: "ai_gateway_invalid_smoke_response",
+        message: 'Model response did not include {"ok":true}',
+      };
+    }
+
+    return { ok: true, provider: "ai_gateway", model };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "ai_gateway_network_error",
+      message: error instanceof Error ? error.message : "ai_gateway_network_error",
+    };
+  }
+}
+
+async function smokeViaOllama(): Promise<TickModelSmokeResult> {
+  const baseUrl = process.env.OLLAMA_BASE_URL?.trim();
+  if (!baseUrl) {
+    return { ok: false, error: "ollama_unset", message: "OLLAMA_BASE_URL unset" };
+  }
+
+  const model = process.env.OLLAMA_MODEL?.trim() || "llama3.2";
+  const endpoint = `${baseUrl.replace(/\/$/, "")}/api/generate`;
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model,
+        prompt: SMOKE_PROMPT,
+        stream: false,
+        options: { temperature: 0 },
+      }),
+      cache: "no-store",
+    });
+
+    const payload = (await response.json()) as {
+      response?: string;
+      error?: string;
+    };
+
+    if (!response.ok || payload.error) {
+      return {
+        ok: false,
+        error: "ollama_request_failed",
+        message: payload.error ?? `Ollama HTTP ${response.status}`,
+      };
+    }
+
+    if (!parseSmokeOkFromModelText(payload.response ?? "")) {
+      return {
+        ok: false,
+        error: "ollama_invalid_smoke_response",
+        message: 'Model response did not include {"ok":true}',
+      };
+    }
+
+    return { ok: true, provider: "ollama", model };
+  } catch (error) {
+    return {
+      ok: false,
+      error: "ollama_network_error",
+      message: error instanceof Error ? error.message : "ollama_network_error",
+    };
+  }
+}
+
+/**
+ * Minimal model connectivity probe using the same provider priority as tick selection.
+ * Does not read trading/broadcast policy or execute trades.
+ */
+export async function smokeTickModel(): Promise<TickModelSmokeResult> {
+  if (getGeminiApiKey()) {
+    const result = await smokeViaGemini();
+    logger.info("agent1_tick_model_smoke_gemini", {
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+    });
+    return result;
+  }
+
+  if (getAiGatewayApiKey()) {
+    const result = await smokeViaAiGateway();
+    logger.info("agent1_tick_model_smoke_ai_gateway", {
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+    });
+    return result;
+  }
+
+  if (process.env.OLLAMA_BASE_URL?.trim()) {
+    const result = await smokeViaOllama();
+    logger.info("agent1_tick_model_smoke_ollama", {
+      ok: result.ok,
+      error: result.ok ? undefined : result.error,
+    });
+    return result;
+  }
+
+  return {
+    ok: false,
+    error: "model_credentials_missing",
+    message: "No Gemini, AI Gateway, or Ollama credentials configured",
+  };
+}
