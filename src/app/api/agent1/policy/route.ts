@@ -15,5 +15,6 @@ export async function GET() {
     limits: policy.limits,
     gates: policy.gates,
     trading: policy.trading,
+    tick: policy.tick,
   });
 }

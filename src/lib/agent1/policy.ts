@@ -20,7 +20,7 @@ export interface Agent1PolicyGates {
 
 export interface Agent1Policy {
   agent: "agent1";
-  version: "slice-c";
+  version: "slice-d";
   subgraph: {
     providerMode: "studio" | "goldsky" | "dual";
     studioUrl: string;
@@ -29,9 +29,16 @@ export interface Agent1Policy {
   limits: Agent1PolicyLimits;
   gates: Agent1PolicyGates;
   trading: {
-    /** disabled = gates closed; dry_run = gates open but Slice C never broadcasts */
+    /** disabled = gates closed; dry_run = gates open but Slice D never broadcasts */
     mode: "disabled" | "dry_run";
     reason: string;
+  };
+  tick: {
+    /** Slice D cron tick endpoint is deployed; still dry-run only */
+    enabled: true;
+    endpoint: "/api/agent1/tick";
+    cronSchedule: "*/30 * * * *";
+    auth: "bearer_cron_secret";
   };
 }
 
@@ -96,12 +103,12 @@ export function getAgent1Policy(): Agent1Policy {
   if (killSwitch) {
     reason = "kill_switch_active";
   } else if (tradingEnabled) {
-    reason = "trading_enabled_but_slice_c_dry_run_only";
+    reason = "trading_enabled_but_slice_d_dry_run_only";
   }
 
   return {
     agent: "agent1",
-    version: "slice-c",
+    version: "slice-d",
     subgraph: {
       providerMode: getSubgraphProviderMode(),
       studioUrl,
@@ -115,6 +122,12 @@ export function getAgent1Policy(): Agent1Policy {
     trading: {
       mode: tradingBlocked ? "disabled" : "dry_run",
       reason,
+    },
+    tick: {
+      enabled: true,
+      endpoint: "/api/agent1/tick",
+      cronSchedule: "*/30 * * * *",
+      auth: "bearer_cron_secret",
     },
   };
 }
@@ -133,7 +146,7 @@ export function executeTradingNoOp(intent?: string): TradingNoOpResult {
     ? policy.gates.killSwitch
       ? "kill_switch_active"
       : "trading_disabled"
-    : "slice_c_dry_run_only";
+    : "slice_d_dry_run_only";
 
   logger.info("trading_noop", {
     intent,
