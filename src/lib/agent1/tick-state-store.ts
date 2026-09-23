@@ -160,12 +160,38 @@ export function getUtcDayKey(date = new Date()): string {
   return date.toISOString().slice(0, 10);
 }
 
-function createDefaultStore(): Agent1TickStore {
-  const url = process.env.UPSTASH_REDIS_REST_URL?.trim();
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
+function httpsUrl(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed?.startsWith("https://")) {
+    return undefined;
+  }
+  return trimmed;
+}
 
-  if (url && token) {
-    return new UpstashRestTickStore(url, token);
+/**
+ * Prefer explicit Upstash REST env. The Vercel Upstash integration injects the
+ * same credentials as KV_REST_API_URL / KV_REST_API_TOKEN.
+ */
+function resolveUpstashRestCredentials(): { url: string; token: string } | undefined {
+  const upstashUrl = httpsUrl(process.env.UPSTASH_REDIS_REST_URL);
+  const upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN?.trim();
+  if (upstashUrl && upstashToken) {
+    return { url: upstashUrl, token: upstashToken };
+  }
+
+  const kvUrl = httpsUrl(process.env.KV_REST_API_URL);
+  const kvToken = process.env.KV_REST_API_TOKEN?.trim();
+  if (kvUrl && kvToken) {
+    return { url: kvUrl, token: kvToken };
+  }
+
+  return undefined;
+}
+
+function createDefaultStore(): Agent1TickStore {
+  const credentials = resolveUpstashRestCredentials();
+  if (credentials) {
+    return new UpstashRestTickStore(credentials.url, credentials.token);
   }
 
   return memoryStore;

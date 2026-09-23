@@ -8,6 +8,8 @@ describe("getAgent1Policy slice E prep", () => {
     delete process.env.KILL_SWITCH;
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
   });
 
   afterEach(() => {
@@ -15,6 +17,8 @@ describe("getAgent1Policy slice E prep", () => {
     delete process.env.KILL_SWITCH;
     delete process.env.UPSTASH_REDIS_REST_URL;
     delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    delete process.env.KV_REST_API_URL;
+    delete process.env.KV_REST_API_TOKEN;
   });
 
   it("defaults to disabled dry-run gates", () => {
@@ -38,6 +42,26 @@ describe("getAgent1Policy slice E prep", () => {
   it("reports upstash backend when redis env is set", () => {
     process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
     process.env.UPSTASH_REDIS_REST_TOKEN = "token";
+
+    const policy = getAgent1Policy();
+    expect(policy.tick.store.backend).toBe("upstash");
+    expect(policy.tick.store.persistent).toBe(true);
+  });
+
+  it("uses the Vercel KV REST credentials when Upstash names are unset", () => {
+    process.env.KV_REST_API_URL = "https://example.upstash.io";
+    process.env.KV_REST_API_TOKEN = "token";
+
+    const policy = getAgent1Policy();
+    expect(policy.tick.store.backend).toBe("upstash");
+    expect(policy.tick.store.persistent).toBe(true);
+  });
+
+  it("ignores non-URL Upstash values and falls back to KV REST credentials", () => {
+    process.env.UPSTASH_REDIS_REST_URL = "${KV_REST_API_URL}";
+    process.env.UPSTASH_REDIS_REST_TOKEN = "${KV_REST_API_TOKEN}";
+    process.env.KV_REST_API_URL = "https://example.upstash.io";
+    process.env.KV_REST_API_TOKEN = "token";
 
     const policy = getAgent1Policy();
     expect(policy.tick.store.backend).toBe("upstash");
