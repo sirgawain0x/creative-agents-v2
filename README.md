@@ -90,6 +90,8 @@ Mint path when **confirmed**: approve USDC → Hub-2 vault → `FoundryFacet.min
 
 Until `AGENT1_ROUTER_CONFIRMED=true` **and** `AGENT1_METOKENS_DIAMOND_ADDRESS` is set, responses keep `venue.routerConfirmed: false` and provisional approve-to-diamond calldata.
 
+G2 checklist with verified selectors and addresses: [docs/AGENT1_ROUTER_CONFIRM.md](./docs/AGENT1_ROUTER_CONFIRM.md).
+
 ### `/api/agent1/tick`
 
 Cron-triggered (or manual) tick:
