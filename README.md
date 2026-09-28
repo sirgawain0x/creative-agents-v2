@@ -20,10 +20,10 @@ Copy `.env.example` to `.env.local` for local development:
 | `TRADING_ENABLED` | `false` | Master gate (tick plans when true; broadcast still gated) |
 | `KILL_SWITCH` | `false` | Emergency stop — overrides `TRADING_ENABLED` |
 | `AGENT1_BROADCAST_ENABLED` | `false` | **Explicit** live send opt-in for `wallet_sendPreparedCalls` |
-| `MAX_TRADE_USDC` | `25` | Max single trade size (USDC) |
-| `DAILY_VOLUME_USDC` | `100` | Max daily volume (USDC) |
+| `MAX_TRADE_USDC` | `1` | Max single trade size (USDC) per tick |
+| `DAILY_VOLUME_USDC` | `3` | Max daily volume (USDC, UTC day) |
 | `SLIPPAGE_BPS` | `250` | Slippage tolerance (basis points) |
-| `COOLDOWN_SECONDS` | `1800` | Cooldown between planned ticks (seconds) |
+| `COOLDOWN_SECONDS` | `21600` | Cooldown between planned ticks (6h default) |
 | `AGENT1_DENIED_METOKENS` | _(empty)_ | Optional comma-separated deny list |
 | `SUBGRAPH_PROVIDER_MODE` | `studio` | `studio` (preferred), `goldsky`, or `dual` |
 | `GRAPH_STUDIO_CREATIVE_PLATFORM_URL` | Studio creative-platform URL | Locked Studio subgraph endpoint |
@@ -101,7 +101,7 @@ Cron-triggered (or manual) tick:
 5. Runs quote + dry-run planning
 6. Broadcasts only when every live gate passes and signed prepared calls exist
 
-**Cron schedule:** every 30 minutes via `vercel.json` (`*/30 * * * *`).
+**Cron schedule:** every 6 hours via `vercel.json` (`0 */6 * * *`), aligned with the default 6h cooldown for sparse activity.
 
 **Smoke test:**
 

@@ -32,6 +32,14 @@ describe("getAgent1Policy slice E live", () => {
     delete process.env.KV_REST_API_TOKEN;
   });
 
+  it("defaults to sparse survival-first limits when env unset", () => {
+    const policy = getAgent1Policy();
+    expect(policy.limits.maxTradeUsdc).toBe(1);
+    expect(policy.limits.dailyVolumeUsdc).toBe(3);
+    expect(policy.limits.cooldownSeconds).toBe(21_600);
+    expect(policy.tick.cronSchedule).toBe("0 */6 * * *");
+  });
+
   it("defaults to disabled dry-run gates", () => {
     const policy = getAgent1Policy();
     expect(policy.version).toBe("slice-e-live");
