@@ -34,7 +34,7 @@ describe("quoteUsdcToMeToken", () => {
   it("returns mock quote when diamond/RPC unset (fail-closed staging)", async () => {
     const quote = await quoteUsdcToMeToken({
       meToken: mockMeToken,
-      usdcAmount: "10",
+      usdcAmount: "1",
     });
 
     expect(quote.mode).toBe("mock");
@@ -49,7 +49,7 @@ describe("quoteUsdcToMeToken", () => {
     await expect(
       quoteUsdcToMeToken({
         meToken: mockMeToken,
-        usdcAmount: "10",
+        usdcAmount: "1",
       }),
     ).rejects.toThrow(/AGENT1_METOKENS_DIAMOND_ADDRESS/);
   });
@@ -62,7 +62,7 @@ describe("quoteUsdcToMeToken", () => {
 
     const quote = await quoteUsdcToMeToken({
       meToken: mockMeToken,
-      usdcAmount: "10",
+      usdcAmount: "1",
     });
 
     expect(quote.venue.routerConfirmed).toBe(true);

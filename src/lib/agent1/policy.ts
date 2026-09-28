@@ -161,7 +161,7 @@ export function getAgent1Policy(): Agent1Policy {
     tick: {
       enabled: true,
       endpoint: "/api/agent1/tick",
-      cronSchedule: "*/30 * * * *",
+      cronSchedule: "0 */6 * * *",
       auth: "bearer_cron_secret",
       store: getTickStoreMeta(),
     },
