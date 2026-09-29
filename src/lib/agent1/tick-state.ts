@@ -39,6 +39,15 @@ export type TickStateErr = {
 };
 export type TickStateResult<T> = TickStateOk<T> | TickStateErr;
 
+// UTC 6h cron slot starts (00, 06, 12, 18) — matches agent1 tick schedule.
+function utcSixHourCronSlotStartMs(now: Date): number {
+  const slot = new Date(now);
+  slot.setUTCSeconds(0, 0);
+  slot.setUTCMinutes(0);
+  slot.setUTCHours(Math.floor(slot.getUTCHours() / 6) * 6);
+  return slot.getTime();
+}
+
 function rolloverIfNeeded(state: PersistedTickState, now = new Date()): PersistedTickState {
   const day = getUtcDayKey(now);
   if (day !== state.dailyVolumeDayUtc) {
@@ -175,7 +184,7 @@ export async function recordPlannedDryRun(
     const next: PersistedTickState = {
       dailyVolumeUsedUsdc: rolled.dailyVolumeUsedUsdc + amountUsdc,
       dailyVolumeDayUtc: rolled.dailyVolumeDayUtc,
-      lastPlannedAtMs: now.getTime(),
+      lastPlannedAtMs: utcSixHourCronSlotStartMs(now),
     };
     return {
       state: next,
