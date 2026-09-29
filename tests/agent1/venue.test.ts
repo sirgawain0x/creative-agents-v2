@@ -109,7 +109,7 @@ describe("dryRun venue paths", () => {
 
     const result = await dryRunUsdcToMeToken({
       meToken: mockMeToken.meToken,
-      usdcAmount: "5",
+      usdcAmount: "1",
     });
 
     expect(result.ok).toBe(true);

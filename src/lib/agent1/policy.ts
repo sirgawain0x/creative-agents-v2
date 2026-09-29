@@ -40,7 +40,7 @@ export interface Agent1Policy {
   tick: {
     enabled: true;
     endpoint: "/api/agent1/tick";
-    cronSchedule: "*/30 * * * *";
+    cronSchedule: "0 */6 * * *";
     auth: "bearer_cron_secret";
     store: ReturnType<typeof getTickStoreMeta>;
   };
@@ -101,16 +101,16 @@ export function getAgent1Policy(): Agent1Policy {
     venueStatus.gates.broadcastAllowed;
 
   const limits: Agent1PolicyLimits = {
-    maxTradeUsdc: parsePositiveNumber(process.env.MAX_TRADE_USDC, 25, "MAX_TRADE_USDC"),
+    maxTradeUsdc: parsePositiveNumber(process.env.MAX_TRADE_USDC, 1, "MAX_TRADE_USDC"),
     dailyVolumeUsdc: parsePositiveNumber(
       process.env.DAILY_VOLUME_USDC,
-      100,
+      3,
       "DAILY_VOLUME_USDC",
     ),
     slippageBps: parsePositiveNumber(process.env.SLIPPAGE_BPS, 250, "SLIPPAGE_BPS"),
     cooldownSeconds: parsePositiveNumber(
       process.env.COOLDOWN_SECONDS,
-      1800,
+      21_600,
       "COOLDOWN_SECONDS",
     ),
   };
@@ -161,7 +161,7 @@ export function getAgent1Policy(): Agent1Policy {
     tick: {
       enabled: true,
       endpoint: "/api/agent1/tick",
-      cronSchedule: "*/30 * * * *",
+      cronSchedule: "0 */6 * * *",
       auth: "bearer_cron_secret",
       store: getTickStoreMeta(),
     },

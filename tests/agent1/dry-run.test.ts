@@ -172,7 +172,7 @@ describe("dryRunUsdcToMeToken", () => {
   it("returns a local dry-run plan without broadcasting", async () => {
     const result = await dryRunModule.dryRunUsdcToMeToken({
       meToken: mockMeToken.meToken,
-      usdcAmount: "10",
+      usdcAmount: "1",
     });
 
     expect(result.ok).toBe(true);
@@ -224,7 +224,7 @@ describe("dryRunUsdcToMeToken", () => {
 
     const result = await dryRunModule.dryRunUsdcToMeToken({
       meToken: mockMeToken.meToken,
-      usdcAmount: "5",
+      usdcAmount: "1",
     });
 
     expect(result.ok).toBe(true);
